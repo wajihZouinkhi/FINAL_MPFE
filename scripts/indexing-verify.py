@@ -73,6 +73,8 @@ def main() -> int:
     conn.autocommit = True
     cur = conn.cursor()
 
+    thread_a = str(uuid.uuid4())
+    thread_b = str(uuid.uuid4())
     syllabus_a = str(uuid.uuid4())
     syllabus_b = str(uuid.uuid4())
     unity_a = str(uuid.uuid4())
@@ -84,15 +86,28 @@ def main() -> int:
     created: list[tuple[str, str]] = []  # (table, id)
 
     try:
-        # --- arrange: two syllabuses + one unity each ----------------------
+        # --- arrange: two threads -> two syllabuses + one unity each -------
+        # syllabuses.thread_id is NOT NULL with an FK to threads(id), so the
+        # threads have to land first. ON DELETE CASCADE means deleting the
+        # thread on cleanup wipes the syllabus + unity rows too.
         cur.execute(
-            "insert into public.syllabuses(id, title, description) values (%s, %s, %s)",
-            (syllabus_a, "Indexing verify A", "test"),
+            "insert into public.threads(id, agent) values (%s, 'deepagent')",
+            (thread_a,),
+        )
+        created.append(("threads", thread_a))
+        cur.execute(
+            "insert into public.threads(id, agent) values (%s, 'deepagent')",
+            (thread_b,),
+        )
+        created.append(("threads", thread_b))
+        cur.execute(
+            "insert into public.syllabuses(id, thread_id, title, description) values (%s, %s, %s, %s)",
+            (syllabus_a, thread_a, "Indexing verify A", "test"),
         )
         created.append(("syllabuses", syllabus_a))
         cur.execute(
-            "insert into public.syllabuses(id, title, description) values (%s, %s, %s)",
-            (syllabus_b, "Indexing verify B", "test"),
+            "insert into public.syllabuses(id, thread_id, title, description) values (%s, %s, %s, %s)",
+            (syllabus_b, thread_b, "Indexing verify B", "test"),
         )
         created.append(("syllabuses", syllabus_b))
         cur.execute(

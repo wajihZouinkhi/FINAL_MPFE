@@ -30,26 +30,40 @@ export class EntitiesService {
     title: string;
     description: string;
     thread_id: string | null;
-  }): Promise<{ id: string; title: string; thread_id: string | null }> {
+  }): Promise<{ id: string; title: string; thread_id: string }> {
     if (!opts.title?.trim()) {
       throw new BadRequestException("title is required");
     }
+
+    // syllabuses.thread_id is NOT NULL with an ON DELETE CASCADE FK to
+    // threads(id). When the caller doesn't supply a thread id, allocate
+    // a synthetic deep-agent thread up-front so the syllabus has
+    // somewhere to checkpoint when /generate runs.
+    let threadId = opts.thread_id;
+    if (!threadId) {
+      const newThreadId = uuidv4();
+      const { error: threadErr } = await this.supa.client
+        .from("threads")
+        .insert({ id: newThreadId, agent: "deepagent" })
+        .select("id")
+        .single();
+      if (threadErr) throw threadErr;
+      threadId = newThreadId;
+    }
+
     const id = uuidv4();
-    // If no thread_id is supplied, we leave the column null and let the
-    // ScopedGenerateService allocate a synthetic deep-agent thread when
-    // the generate step runs.
     const { error } = await this.supa.client
       .from("syllabuses")
       .insert({
         id,
         title: opts.title.trim(),
         description: opts.description,
-        thread_id: opts.thread_id,
+        thread_id: threadId,
       })
       .select("id")
       .single();
     if (error) throw error;
-    return { id, title: opts.title.trim(), thread_id: opts.thread_id };
+    return { id, title: opts.title.trim(), thread_id: threadId };
   }
 
   async getSyllabus(syllabusId: string): Promise<{
