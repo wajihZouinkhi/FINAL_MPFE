@@ -285,22 +285,27 @@ export default function ManualWorkspaceView({ syllabusId }: Props) {
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-[var(--background)]">
-      <header className="flex shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--card)]/40 px-4 py-3">
+      <header className="flex shrink-0 items-center gap-3 border-b border-[var(--border)] bg-gradient-to-r from-[var(--card)]/70 via-[var(--card)]/40 to-[var(--card)]/20 px-5 py-3.5 backdrop-blur">
         <Link
           href="/manual"
           aria-label="Back to manual workspace index"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] transition hover:text-[var(--primary)]"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] transition hover:-translate-x-px hover:border-[var(--primary)]/40 hover:text-[var(--primary)]"
         >
           <ArrowLeft className="h-4 w-4" />
         </Link>
-        <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--primary)]/15 ring-1 ring-[var(--primary)]/30">
+        <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[var(--primary)]/30 to-[var(--primary)]/10 ring-1 ring-[var(--primary)]/40 shadow-[0_0_12px_rgba(255,144,108,0.15)]">
           <Hammer className="h-4 w-4 text-[var(--primary)]" />
         </span>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-[14px] font-semibold tracking-tight">
-            {tree.syllabus.title}
-          </h1>
-          <p className="truncate text-[11px] text-[var(--muted-foreground)]">
+          <div className="flex items-center gap-2">
+            <h1 className="truncate text-[15px] font-semibold tracking-tight">
+              {tree.syllabus.title}
+            </h1>
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--primary)]/30 bg-[var(--primary)]/10 px-2 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider text-[var(--primary)]">
+              Manual
+            </span>
+          </div>
+          <p className="truncate text-[11.5px] text-[var(--muted-foreground)]">
             {tree.syllabus.description || "(no description)"}
           </p>
         </div>
@@ -313,7 +318,7 @@ export default function ManualWorkspaceView({ syllabusId }: Props) {
             })
           }
           disabled={!!stream}
-          className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-[12px] font-medium text-[var(--foreground)] transition hover:border-[var(--primary)] hover:text-[var(--primary)] disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg border border-[var(--primary)]/40 bg-gradient-to-br from-[var(--primary)]/20 to-[var(--primary)]/5 px-3.5 py-2 text-[12.5px] font-semibold text-[var(--primary)] transition hover:from-[var(--primary)]/30 hover:to-[var(--primary)]/15 hover:shadow-[0_0_0_4px_rgba(255,144,108,0.10)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Run the supervisor + writer end-to-end on this syllabus"
         >
           <Sparkles className="h-3.5 w-3.5" />
@@ -323,7 +328,7 @@ export default function ManualWorkspaceView({ syllabusId }: Props) {
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
         {/* Left: tree */}
-        <aside className="min-h-0 overflow-y-auto border-r border-[var(--border)] bg-[var(--card)]/30 p-3">
+        <aside className="min-h-0 overflow-y-auto border-r border-[var(--border)] bg-gradient-to-b from-[var(--card)]/40 to-[var(--card)]/10 p-4">
           {/* Add unity */}
           {addFormFor === "__syllabus__" ? (
             <InlineAddForm
@@ -343,42 +348,78 @@ export default function ManualWorkspaceView({ syllabusId }: Props) {
                 setAddFormFor("__syllabus__");
                 setAddName("");
               }}
-              className="mb-3 inline-flex items-center gap-2 rounded-md border border-dashed border-[var(--border)] px-3 py-1.5 text-[12px] font-medium text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:text-[var(--primary)]"
+              className="group mb-4 inline-flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-[var(--border)] bg-[var(--card)]/30 px-4 py-2.5 text-[13px] font-semibold text-[var(--muted-foreground)] transition-all hover:-translate-y-px hover:border-[var(--primary)] hover:bg-[var(--primary)]/10 hover:text-[var(--primary)] hover:shadow-[0_0_0_4px_rgba(255,144,108,0.08)]"
             >
-              <Plus className="h-3 w-3" />
+              <Plus className="h-4 w-4 transition-transform group-hover:rotate-90" />
               Add unity
             </button>
           )}
 
           {tree.unities.length === 0 ? (
-            <p className="px-1 py-4 text-[11.5px] text-[var(--muted-foreground)]">
-              No unities yet. Add one above to begin.
-            </p>
+            <div className="mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-[var(--border)] bg-[var(--card)]/20 px-4 py-8 text-center">
+              <span className="text-[24px]">📚</span>
+              <p className="text-[12.5px] font-medium text-[var(--foreground)]">
+                No unities yet
+              </p>
+              <p className="text-[11px] text-[var(--muted-foreground)]">
+                Click <span className="font-semibold text-[var(--primary)]">+ Add unity</span> above to begin.
+              </p>
+            </div>
           ) : (
-            <ul className="space-y-2">
-              {tree.unities.map((u) => (
-                <li key={u.id} className="rounded-md border border-[var(--border)] bg-[var(--background)]/40">
-                  <div className="flex items-center gap-2 px-2 py-1.5">
+            <ul className="space-y-3">
+              {tree.unities.map((u) => {
+                const isSelected =
+                  viewing?.kind === "unity" && viewing.id === u.id;
+                const completedCount = u.activities.filter((a) => !!a.body).length;
+                const isStreamingThis =
+                  stream?.scope === "unities" && stream?.entityId === u.id;
+                return (
+                <li
+                  key={u.id}
+                  className={`overflow-hidden rounded-xl border bg-gradient-to-br from-[var(--card)] to-[var(--card)]/40 shadow-sm transition-all ${
+                    isSelected
+                      ? "border-[var(--primary)]/60 shadow-[0_0_0_3px_rgba(255,144,108,0.08)]"
+                      : isStreamingThis
+                        ? "border-[var(--primary)]/40 ring-1 ring-[var(--primary)]/30 animate-pulse"
+                        : "border-[var(--border)] hover:border-[var(--primary)]/30 hover:shadow-md"
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 px-3 py-2.5">
                     <button
                       onClick={() => toggle(u.id)}
                       aria-label="Toggle"
-                      className="text-[var(--muted-foreground)]"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition hover:bg-[var(--muted)]/30 hover:text-[var(--foreground)]"
                     >
                       {expanded[u.id] ? (
-                        <ChevronDown className="h-3 w-3" />
+                        <ChevronDown className="h-3.5 w-3.5" />
                       ) : (
-                        <ChevronRight className="h-3 w-3" />
+                        <ChevronRight className="h-3.5 w-3.5" />
                       )}
                     </button>
                     <button
                       onClick={() => setViewing({ kind: "unity", id: u.id })}
-                      className="min-w-0 flex-1 truncate text-left text-[12.5px] font-medium hover:text-[var(--primary)]"
+                      className={`min-w-0 flex-1 truncate text-left text-[13.5px] font-semibold tracking-tight transition ${
+                        isSelected
+                          ? "text-[var(--primary)]"
+                          : "text-[var(--foreground)] hover:text-[var(--primary)]"
+                      }`}
                       title={u.title}
                     >
                       {u.title}
                     </button>
-                    <span className="font-mono text-[10px] text-[var(--muted-foreground)]/70">
-                      {u.activities.length}
+                    <span
+                      className={`inline-flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold tabular-nums ${
+                        u.activities.length === 0
+                          ? "bg-[var(--muted)]/30 text-[var(--muted-foreground)]"
+                          : completedCount === u.activities.length
+                            ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/30"
+                            : "bg-[var(--primary)]/15 text-[var(--primary)] ring-1 ring-[var(--primary)]/30"
+                      }`}
+                      title={`${completedCount} of ${u.activities.length} activities generated`}
+                    >
+                      {u.activities.length === 0
+                        ? "0"
+                        : `${completedCount}/${u.activities.length}`}
                     </span>
                     <button
                       onClick={() =>
@@ -389,59 +430,108 @@ export default function ManualWorkspaceView({ syllabusId }: Props) {
                         })
                       }
                       disabled={!!stream}
-                      className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--card)] px-1.5 py-0.5 text-[10.5px] text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:text-[var(--primary)] disabled:opacity-50"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--primary)]/30 bg-[var(--primary)]/10 px-2 py-1 text-[11px] font-medium text-[var(--primary)] transition hover:bg-[var(--primary)]/20 hover:shadow-[0_0_0_3px_rgba(255,144,108,0.10)] disabled:cursor-not-allowed disabled:opacity-40"
                       title="Generate activities under this unity (writer calls find_related_activities first)"
                     >
-                      <Sparkles className="h-2.5 w-2.5" />
-                      Gen
+                      {isStreamingThis ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3 w-3" />
+                      )}
+                      Generate
                     </button>
                   </div>
 
                   {expanded[u.id] && (
-                    <div className="border-t border-[var(--border)] px-2 py-2">
-                      {u.activities.map((a) => (
-                        <div
-                          key={a.id}
-                          className="mb-1 flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--muted)]/15"
-                        >
-                          <FileText className="h-3 w-3 shrink-0 text-[var(--muted-foreground)]/70" />
-                          <button
-                            onClick={() =>
-                              setViewing({ kind: "activity", id: a.id })
-                            }
-                            className="min-w-0 flex-1 truncate text-left text-[11.5px] hover:text-[var(--primary)]"
-                            title={a.title}
+                    <div className="border-t border-[var(--border)] bg-[var(--background)]/40 px-3 py-2.5">
+                      {u.activities.length === 0 && addFormFor !== u.id && (
+                        <p className="mb-2 px-1 text-[11px] italic text-[var(--muted-foreground)]">
+                          No activities yet — add one below.
+                        </p>
+                      )}
+                      <ul className="relative ml-2 space-y-1 border-l-2 border-[var(--border)]/60 pl-3">
+                        {u.activities.map((a) => {
+                          const aSelected =
+                            viewing?.kind === "activity" && viewing.id === a.id;
+                          const aStreaming =
+                            stream?.scope === "activities" &&
+                            stream?.entityId === a.id;
+                          const hasWorksheet =
+                            !!a.worksheet &&
+                            typeof a.worksheet === "object" &&
+                            Object.keys(a.worksheet as Record<string, unknown>).length > 0;
+                          return (
+                          <li
+                            key={a.id}
+                            className={`group relative flex items-center gap-2 rounded-md px-2 py-1.5 transition ${
+                              aSelected
+                                ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                                : "hover:bg-[var(--muted)]/15"
+                            }`}
                           >
-                            {a.title}
-                          </button>
-                          <span
-                            className={`text-[9.5px] font-mono ${a.body ? "text-emerald-400/80" : "text-[var(--muted-foreground)]/70"}`}
-                            title={
-                              a.body
-                                ? "body populated"
-                                : "not yet generated"
-                            }
-                          >
-                            {a.body ? "ready" : "empty"}
-                          </span>
-                          <button
-                            onClick={() =>
-                              runStream({
-                                scope: "activities",
-                                entityId: a.id,
-                                label: `Generate activity: ${a.title}`,
-                              })
-                            }
-                            disabled={!!stream}
-                            className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--card)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:text-[var(--primary)] disabled:opacity-50"
-                            title="Generate this activity's body + worksheet"
-                          >
-                            <Sparkles className="h-2 w-2" />
-                            Gen
-                          </button>
-                        </div>
-                      ))}
+                            <span
+                              className="absolute -left-3 top-1/2 h-px w-3 bg-[var(--border)]/60"
+                              aria-hidden="true"
+                            />
+                            <span className="shrink-0 text-[14px] leading-none" title={hasWorksheet ? "Has worksheet" : "Body only"}>
+                              {hasWorksheet ? "📝" : a.body ? "📖" : "📄"}
+                            </span>
+                            <button
+                              onClick={() =>
+                                setViewing({ kind: "activity", id: a.id })
+                              }
+                              className={`min-w-0 flex-1 truncate text-left text-[12px] transition ${
+                                aSelected
+                                  ? "font-medium text-[var(--primary)]"
+                                  : "text-[var(--foreground)] hover:text-[var(--primary)]"
+                              }`}
+                              title={a.title}
+                            >
+                              {a.title}
+                            </button>
+                            <span
+                              className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-wide ${
+                                aStreaming
+                                  ? "bg-[var(--primary)]/20 text-[var(--primary)] ring-1 ring-[var(--primary)]/40"
+                                  : a.body
+                                    ? "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+                                    : "bg-[var(--muted)]/30 text-[var(--muted-foreground)] ring-1 ring-[var(--border)]"
+                              }`}
+                              title={
+                                aStreaming
+                                  ? "Currently generating"
+                                  : a.body
+                                    ? "Generated"
+                                    : "Not generated yet"
+                              }
+                            >
+                              {aStreaming ? "live" : a.body ? "ready" : "empty"}
+                            </span>
+                            <button
+                              onClick={() =>
+                                runStream({
+                                  scope: "activities",
+                                  entityId: a.id,
+                                  label: `Generate activity: ${a.title}`,
+                                })
+                              }
+                              disabled={!!stream}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--primary)]/30 bg-[var(--primary)]/5 px-1.5 py-0.5 text-[10.5px] font-medium text-[var(--primary)] transition hover:bg-[var(--primary)]/15 disabled:cursor-not-allowed disabled:opacity-40"
+                              title="Generate this activity's body + worksheet (writer calls find_related_activities first)"
+                            >
+                              {aStreaming ? (
+                                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                              ) : (
+                                <Sparkles className="h-2.5 w-2.5" />
+                              )}
+                              Gen
+                            </button>
+                          </li>
+                          );
+                        })}
+                      </ul>
 
+                      <div className="mt-2 ml-2 pl-3">
                       {addFormFor === u.id ? (
                         <InlineAddForm
                           placeholder="Activity title (e.g. 'Lab: hello world')"
@@ -460,16 +550,18 @@ export default function ManualWorkspaceView({ syllabusId }: Props) {
                             setAddFormFor(u.id);
                             setAddName("");
                           }}
-                          className="ml-3 inline-flex items-center gap-1 rounded-md border border-dashed border-[var(--border)] px-2 py-0.5 text-[10.5px] text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:text-[var(--primary)]"
+                          className="group inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border)] bg-[var(--card)]/40 px-2.5 py-1 text-[11.5px] font-medium text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:bg-[var(--primary)]/10 hover:text-[var(--primary)]"
                         >
-                          <Plus className="h-2.5 w-2.5" />
+                          <Plus className="h-3 w-3 transition-transform group-hover:rotate-90" />
                           Add activity
                         </button>
                       )}
+                      </div>
                     </div>
                   )}
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </aside>
