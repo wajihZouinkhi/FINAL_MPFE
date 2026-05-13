@@ -16,9 +16,13 @@ dependencies = [
     "python-dotenv>=1.0.0",
     # CPU-only PyTorch + sentence-transformers powers the local 384-d
     # `all-MiniLM-L6-v2` embedding model used by the find_related_*
-    # retrieval tools. The model weights themselves are pre-downloaded
-    # into the Docker image at build time so cold start is fast.
-    "sentence-transformers>=3.0.0",
+    # retrieval tools. We pin to torch 2.6.0 because that's the
+    # newest CPU-only build available on download.pytorch.org/whl/cpu;
+    # newer versions on PyPI ship with CUDA libs and balloon the image
+    # from ~1 GB to ~11 GB, breaking Railway's deploy phase. Pin
+    # sentence-transformers to a version that supports torch 2.6.
+    "torch==2.6.0",
+    "sentence-transformers>=3.0.0,<4.0.0",
 ]
 
 [project.scripts]
@@ -35,3 +39,15 @@ packages = ["src/mpfe_mcp_supabase"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+# Route torch + friends through the PyTorch CPU wheel index so we
+# don't drag in CUDA (~3 GB of NVIDIA libs) on Linux. Without this,
+# the resulting image is ~10 GB and crashes Railway's deploy phase.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
