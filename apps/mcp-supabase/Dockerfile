@@ -42,9 +42,10 @@ ENV UV_INDEX_STRATEGY=unsafe-best-match \
 
 RUN uv sync --no-dev
 
-# Pre-download the sentence-transformer model weights so the first
-# /find_related_* call doesn't have to fetch ~80 MB from Hugging Face.
-RUN uv run --no-sync python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+# Note: the sentence-transformer model is downloaded lazily on the
+# first /find_related_* call (~80 MB from Hugging Face). Preloading
+# during build was removed because it intermittently fails the build
+# step on Railway with image-push timeouts on the large layer.
 
 # Non-root for defense-in-depth.
 RUN useradd --create-home --shell /usr/sbin/nologin app \
