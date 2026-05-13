@@ -1,0 +1,26 @@
+node_modules/
+dist/
+.next/
+.turbo/
+coverage/
+
+# env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# system
+.DS_Store
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# editors
+.vscode/
+.idea/
+
+# tooling
+*.tsbuildinfo

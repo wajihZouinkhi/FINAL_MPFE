@@ -1,0 +1,16 @@
+# Railway service config for the NestJS API.
+#
+# Point the API service at this file via Railway settings:
+#   Service → Settings → Config-as-Code → "apps/api/railway.toml"
+#
+# Paths are relative to the repo root (since rootDirectory = "/").
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "apps/api/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

@@ -1,0 +1,32 @@
+[project]
+name = "mpfe-mcp-supabase"
+version = "0.1.0"
+description = "MCP server exposing read-only Supabase access for the activity-generator-tooled agent."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # FastMCP is the high-level MCP server framework that ships with the
+    # official Python SDK; it gives us a decorator-based @mcp.tool() API
+    # over the lower-level mcp.server primitives.
+    "mcp[cli]>=1.2.0",
+    # supabase-py speaks the PostgREST + Realtime APIs; we only use the
+    # PostgREST side here. Pinned to 2.x for the typed `.execute()`
+    # response object.
+    "supabase>=2.7.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+# stdio entrypoint. The api spawns this script as a child process and
+# pipes JSON-RPC frames over stdin/stdout.
+mpfe-mcp-supabase = "mpfe_mcp_supabase.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mpfe_mcp_supabase"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

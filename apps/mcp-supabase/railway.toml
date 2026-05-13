@@ -1,0 +1,17 @@
+# Railway service config for the mpfe-mcp-supabase Python MCP server.
+#
+# Point the Railway service at this file via:
+#   Service → Settings → Config-as-Code → "apps/mcp-supabase/railway.toml"
+#
+# Paths are relative to the repo root (rootDirectory = "/").
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "apps/mcp-supabase/Dockerfile"
+
+[deploy]
+# No /health endpoint — FastMCP only mounts /mcp. The MCP server is
+# only reachable on the private network so we rely on Railway's
+# container-level liveness signals instead of an HTTP healthcheck.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

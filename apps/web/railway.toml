@@ -1,0 +1,17 @@
+# Railway service config for the Next.js web app.
+#
+# Point the web service at this file via Railway settings:
+#   Service → Settings → Config-as-Code → "apps/web/railway.toml"
+#
+# Paths are relative to the repo root (since rootDirectory = "/").
+#
+# No healthcheckPath: Next.js doesn't expose `/health` and Railway's TCP
+# port check is sufficient to detect that the standalone server is up.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "apps/web/Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

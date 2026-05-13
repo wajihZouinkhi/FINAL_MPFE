@@ -1,0 +1,24 @@
+# Build artifacts (recreated inside the image)
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+
+# Local env files (secrets are injected by the host)
+.env
+.env.*
+!.env.example
+
+# VCS / editor / OS noise
+.git
+.github
+.vscode
+.idea
+.DS_Store
+
+# Repo-level docs and tests aren't needed at runtime
+docs
+*.md
+!apps/api/README.md

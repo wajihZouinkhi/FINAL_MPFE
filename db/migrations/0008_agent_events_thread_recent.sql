@@ -1,0 +1,44 @@
+-- ============================================================
+-- 0008_agent_events_thread_recent.sql — Audit §5.1 fix.
+--
+-- The hot read path on `agent_events` is the SSE replay query
+-- in `chat.controller.ts:135-231`: every page reload backfills
+-- the keepalive buffer by selecting the most recent N events
+-- for a thread, ordered by `created_at DESC` (with `id DESC`
+-- as a deterministic tiebreaker for events that share a
+-- microsecond-truncated timestamp).
+--
+-- The 0003 migration created a `(thread_id, run_id, created_at)`
+-- index whose leading column matches but whose ordering doesn't:
+-- Postgres can use the prefix `(thread_id)` and then has to
+-- in-memory sort the events for that thread on `created_at DESC`.
+-- For long-lived syllabus threads (>2k events) that's a
+-- measurable few-millisecond cost on every reload — shows up
+-- as a stall on the typed slice rehydrate path before the FE
+-- can paint anything. The replay also pages by descending id,
+-- which the 0003 index doesn't help with at all.
+--
+-- Add a descending index keyed on the exact sort the replay uses
+-- so Postgres can return the keepalive buffer directly from the
+-- index instead of an in-memory sort.
+--
+-- We do NOT INCLUDE the `payload` jsonb column even though that
+-- would enable index-only scans: in production some
+-- `research_plan` / `manifest` slice payloads exceed btree's
+-- per-row 2704-byte limit (a single ~3 KB research plan emission
+-- with ten picked sources is enough to trip it), so an INCLUDE'd
+-- index would refuse to build with `index row size N exceeds
+-- btree version 4 maximum 2704`. The dominant win here is killing
+-- the post-fetch `Sort` step, which we get from the keying alone;
+-- a heap fetch per matching row is acceptable given the LIMIT 200
+-- the controller already applies.
+--
+-- Idempotent: safe to re-run.
+-- ============================================================
+
+create index if not exists agent_events_thread_recent
+  on agent_events (thread_id, created_at desc, id desc);
+
+-- Drizzle parity: the 0003 index is still useful for run-scoped
+-- queries (per-run replays / debug dumps), so we keep it and
+-- merely add the new descending one alongside.

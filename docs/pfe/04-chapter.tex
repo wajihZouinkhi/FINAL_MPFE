@@ -1,0 +1,169 @@
+% =====================================================================
+%  PFE — Chapter: Agent Orchestration & Post-Audit Optimization
+%
+%  Drop-in chapter for the author's PFE book. All figures are produced
+%  by docs/pfe/03-figures/scripts/build_all.py and saved as PDF/PGF in
+%  docs/pfe/03-figures/. All cited measurements come from
+%  docs/pfe/02-optimizations/<n>.md.
+%
+%  Required preamble in the host book (excerpt):
+%    \usepackage{graphicx}
+%    \usepackage{pgfplots}
+%    \usepackage{booktabs}
+%    \usepackage{listings}
+%    \usepackage{hyperref}
+% =====================================================================
+
+\chapter{Agent Orchestration and Post-Audit Optimization}
+\label{ch:opt}
+
+% ---------------------------------------------------------------------
+\section{Introduction}
+% ---------------------------------------------------------------------
+
+This chapter recounts the engineering work done on FINAL\_MPFE, an AI-orchestrated
+syllabus and worksheet generation platform, after its first full release. The
+first 69 pull requests of the project (Phase 0 through Phase 6, summarised in
+Appendix~\ref{app:history}) brought the system from an empty repository to a
+three-agent platform with grounded generation, anchored UX, and a typed
+streaming protocol. A deep audit, performed against a running instance, then
+identified four classes of integration bug that this chapter resolves.
+
+The chapter is organised around the audit's priority order. Each subsequent
+section presents one optimisation: the problem statement, the root-cause
+analysis, the design alternatives that were considered, the chosen design, the
+measurement methodology, and the before/after numbers.
+
+% ---------------------------------------------------------------------
+\section{System under study}
+% ---------------------------------------------------------------------
+
+% Pull a one-paragraph architecture summary here from 00-history.md
+% Phase 0 — Phase 6 invariants. Reference Figure 1: agent topology.
+
+\begin{figure}[h]
+  \centering
+  % \includegraphics[width=0.85\linewidth]{03-figures/agent-topology.pdf}
+  \caption{Agent topology of FINAL\_MPFE post-PR\#91. Three agents
+  (syllabus generator, activity-tooled, activity-toolless) share a
+  supervisor router and emit typed state slices over the Vercel AI SDK
+  v5 UI Message Stream protocol (SSE with typed JSON frames). The
+  activity-tooled agent grounds its output via an MCP server backed by
+  Supabase.}
+  \label{fig:topology}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{The audit}
+\label{sec:audit}
+% ---------------------------------------------------------------------
+
+% Summarise 01-audit.md TL;DR in 4 paragraphs:
+%   1. Method (read + run + measure)
+%   2. The four classes of integration bug
+%   3. Priority ordering rationale
+%   4. Forward pointer to optimisations
+% Reference Table 1: audit findings by severity.
+
+% ---------------------------------------------------------------------
+\section{Optimisation 1 — State hydration on completion}
+\label{sec:opt-hydration}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/01-hydration.md
+% Figures: hydration-before-after.pdf
+
+% ---------------------------------------------------------------------
+\section{Optimisation 2 — Parallel research with LangGraph \texttt{Send}}
+\label{sec:opt-parallel}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/02-parallel-research.md
+% Figures: research-latency-cdf.pdf, research-fanout-diagram.pdf
+%
+% Key claims for the chapter:
+%   - Sequentialism in async-friendly code is a recurring anti-pattern in
+%     LangGraph applications because the framework's per-step reducer
+%     model nudges developers towards state-machine traversal.
+%   - The Send API restores the fan-out semantics without sacrificing
+%     checkpointer durability.
+%   - Real measurements: P50/P95/P99 latency before vs after, on the same
+%     5-topic test set, with and without scrape failures injected.
+
+% ---------------------------------------------------------------------
+\section{Optimisation 3 — Tier rebalancing for the critic}
+\label{sec:opt-critic}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/03-critic-tier.md
+% Figures: tier-token-cost.pdf, critic-tier-quality-comparison.pdf
+
+% ---------------------------------------------------------------------
+\section{Optimisation 4 — Intake message hygiene}
+\label{sec:opt-intake}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/04-intake-dedup.md
+% No quantitative figure; UX before/after screenshots in the PR.
+
+% ---------------------------------------------------------------------
+\section{Optimisation 5 — Source-aware research card}
+\label{sec:opt-sources}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/05-research-sources.md
+
+% ---------------------------------------------------------------------
+\section{Optimisation 6 — Polish bundle}
+\label{sec:opt-polish}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/06-quick-wins.md
+
+% ---------------------------------------------------------------------
+\section{Optimisation 7 — Writer recovery}
+\label{sec:opt-writer-recovery}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/07-writer-recovery.md
+
+% ---------------------------------------------------------------------
+\section{Optimisation 8 — Frontend perf: ETag polling and memo deps}
+\label{sec:opt-fe-perf}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/08-fe-perf.md
+
+% ---------------------------------------------------------------------
+\section{Optimisation 9 — Live LLM token streaming}
+\label{sec:opt-token-streaming}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/09-token-streaming.md
+%
+% Key claims for the chapter:
+%   - Token-level streaming on the supervisor required `streamEvents`,
+%     a partial-JSON byte walker, and an envelope reorder so the
+%     user-visible `user_message` field is emitted first.
+%   - On the FE, dropping `useDeferredValue` was necessary because
+%     React's concurrent scheduler coalesces rapid source updates into
+%     a single deferred render at end-of-stream.
+%   - Time-to-first-token: 3.2 s P50 → 0.41 s P50 on the same prompt.
+
+% ---------------------------------------------------------------------
+\section{Optimisation 10 — AI SDK v4 → v5 wire migration}
+\label{sec:opt-aisdk-v5}
+% ---------------------------------------------------------------------
+% Source: docs/pfe/02-optimizations/10-ai-sdk-v5.md
+%
+% Two production-grade ordering bugs (BUG-0001 — terminal run slice
+% dropped by the v5 writer's internal `finished` flag; BUG-0002 —
+% missing [DONE] terminator on the POST error path) caught by the
+% post-merge review pass and fixed in the same PR. Both characteristic
+% of v5 migrations — worth recording for the Discussion.
+
+% ---------------------------------------------------------------------
+\section{Discussion}
+% ---------------------------------------------------------------------
+% Three reflective threads:
+%   1. The cost of integration vs the cost of components.
+%   2. LangGraph's reducer model: a feature, not a constraint.
+%   3. What measurement enabled and what it could not see.
+
+% ---------------------------------------------------------------------
+\appendix
+\section{Pre-audit development history}
+\label{app:history}
+% ---------------------------------------------------------------------
+% Pull from 00-history.md — phase summaries + the PR citation table.

@@ -1,0 +1,31 @@
+-- ============================================================
+-- 0006_lesson_review_clear.sql — Teacher-initiated review clear.
+--
+-- Adds the audit column the new PATCH /api/threads/:threadId/lessons/
+-- :lessonId/review endpoint writes when a teacher clicks the "Mark
+-- reviewed" button on a force-passed lesson's amber banner.
+--
+--   lessons:
+--     review_cleared_at timestamptz  -- NULL when never cleared.
+--                                    -- Set to NOW() the first time a
+--                                    -- teacher dismisses the badge.
+--                                    -- Kept even if review_required is
+--                                    -- later flipped back on (e.g. a
+--                                    -- regenerated lesson re-fails the
+--                                    -- critic) so we have audit history
+--                                    -- of all manual reviews.
+--
+-- The endpoint also flips review_required to false. The FileTree's
+-- "review me" badge and the LessonContractHeader's amber banner already
+-- gate on `review_required = true`, so flipping that single boolean is
+-- sufficient to clear the UI; the timestamp is purely for audit.
+--
+-- The existing partial index (lessons_review_required_idx) is already
+-- predicated on `review_required = true`, so flipping to false naturally
+-- removes the row from the index — no index changes required.
+--
+-- Idempotent: safe to re-run.
+-- ============================================================
+
+alter table lessons
+  add column if not exists review_cleared_at timestamptz;
