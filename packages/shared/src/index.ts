@@ -1053,6 +1053,67 @@ export const SyllabusSnapshot = z.object({
 });
 export type SyllabusSnapshot = z.infer<typeof SyllabusSnapshot>;
 
+// ─── Unity + UnityActivity rows (post-merge entity model) ────────────────────
+//
+// The migration to "syllabus → unity → activity" (db migrations 0013/0014)
+// renamed `chapters` to `unities` and merged `lessons` + `activities` into
+// a single Activity row carrying both the markdown `body` (cours) AND the
+// `worksheet` jsonb (questions). The legacy ChapterRow / LessonRow schemas
+// above are kept verbatim so the existing api/web consumers keep compiling;
+// new code (new controllers, new MCP shapes) uses these schemas instead.
+//
+// NOTE: The legacy `ActivityRow` schema lower in this file represents the
+// pre-merge worksheet-only activity card. The post-merge cours+worksheet
+// row is exported here as `UnitySchemaActivityRow` to avoid a name collision
+// while the legacy worksheet rendering code keeps importing `ActivityRow`.
+export const UnitySchemaUnityRow = z.object({
+  id: z.string().uuid(),
+  syllabus_id: z.string().uuid(),
+  title: z.string(),
+  order_index: z.number().int(),
+  outcomes: z.array(z.string()).optional().default([]),
+  prerequisites: z.array(z.string()).optional().default([]),
+});
+export type UnitySchemaUnityRow = z.infer<typeof UnitySchemaUnityRow>;
+
+export const UnitySchemaActivityRow = z.object({
+  id: z.string().uuid(),
+  unity_id: z.string().uuid().nullable(),
+  thread_id: z.string().uuid().nullable(),
+  title: z.string(),
+  order_index: z.number().int().optional().default(0),
+  // Markdown cours body — the writer subagent fills this in.
+  body: z.string().optional().default(""),
+  // Worksheet jsonb — the activity_maker subagent fills this in via
+  // update_activity_worksheet. May be null until the worksheet has
+  // been authored.
+  worksheet: z.unknown().nullable().optional(),
+  // Pedagogical contract fields (mirrored from LessonRow during merge).
+  learning_objectives: z.array(LearningObjective).optional().default([]),
+  prerequisites: z.array(z.string()).optional().default([]),
+  key_terms: z.array(z.string()).optional().default([]),
+  worked_example_seed: z.string().optional().default(""),
+  assessment_idea: z.string().optional().default(""),
+  duration_min: z.number().int().nonnegative().optional().default(0),
+  bloom_level: BloomLevel.nullable().optional(),
+  review_required: z.boolean().optional().default(false),
+  block_issues: z.array(z.string()).optional().default([]),
+  critic_issues: z.array(CriticIssue).optional().default([]),
+  depends_on: z.array(z.string().uuid()).optional().default([]),
+});
+export type UnitySchemaActivityRow = z.infer<typeof UnitySchemaActivityRow>;
+
+export const UnitySnapshot = z.object({
+  thread_id: z.string().uuid().nullable(),
+  syllabus: SyllabusRow.nullable(),
+  unities: z.array(
+    UnitySchemaUnityRow.extend({
+      activities: z.array(UnitySchemaActivityRow),
+    }),
+  ),
+});
+export type UnitySnapshot = z.infer<typeof UnitySnapshot>;
+
 // ─── Threads list (for the /threads index page) ─────────────────────────────
 //
 // `last_run_status` is the status of the most recent agent_runs row for the

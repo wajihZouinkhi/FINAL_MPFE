@@ -1,63 +1,53 @@
 """
 FastMCP server exposing Supabase access for MPFE agents.
 
-Originally read-only (the activity-generator-tooled agent never wrote
-back to Supabase). Extended in the deep-agent v1 cut to include the
-write tools the supervisor + writer subagents need to persist a
-syllabus end-to-end.
+Tool catalog (Syllabus -> Unity -> Activity refactor):
 
-Read tools (keyed by the existing MPFE schema from db/migrations/0001_init.sql):
+Read tools — new shape::
 
-- list_syllabuses(thread_id) -> list of syllabus rows for a thread.
-  In v1 there is exactly one syllabus per thread, but the tool returns a
-  list so the agent's prompt doesn't have to special-case the singleton.
+    list_syllabuses(thread_id)
+    get_syllabus(syllabus_id)
+    list_unities(syllabus_id)
+    list_activities_for_unity(unity_id)
+    list_activities_for_thread(thread_id)
+    get_activity(activity_id)
 
-- get_syllabus(syllabus_id) -> single syllabus row, including the
-  pedagogical contract columns (audience / scope / pedagogy) the
-  deep-agent supervisor populates on create. Returns None when no row.
+Write tools — new shape::
 
-- list_chapters(syllabus_id) -> ordered chapter rows.
+    create_syllabus(thread_id, title, ...)
+    create_unity(syllabus_id, title, order_index, ...)
+    create_activity(unity_id, title, content, order_index, ...,
+                    worksheet?)
+    update_activity_worksheet(activity_id, worksheet)
 
-- list_lessons(chapter_id) -> ordered lesson rows for a chapter
-  (titles + ids, NOT bodies). Cheap and bounded so the agent can survey
-  what's available before deciding which lesson to fetch in full.
+Retrieval tools (pgvector + local sentence-transformers)::
 
-- list_lessons_for_thread(thread_id) -> flat list of all lessons
-  across the thread's syllabus, joined with chapter titles for context.
-  This is the tool the agent will reach for first 99% of the time —
-  one call gives it the whole menu.
+    embed_text(text) -> list[float]
+    find_related_activities(syllabus_id, query_text, top_k=5)
+    find_related_unities(syllabus_id, query_text, top_k=5)
 
-- get_lesson(lesson_id) -> single lesson row WITH the markdown body.
-  Reserved for the second pass after the agent has chosen which lesson
-  to ground its worksheet on.
+Backward-compat aliases (kept so the legacy /api/chat code path
+keeps functioning during the transition window — they delegate to
+the new tools)::
 
-Write tools (used by the deep-agent supervisor + writer subagents):
+    list_chapters(syllabus_id)      -> list_unities
+    create_chapter(syllabus_id, ..) -> create_unity
+    list_lessons(chapter_id)        -> list_activities_for_unity
+    list_lessons_for_thread(...)    -> list_activities_for_thread
+    get_lesson(lesson_id)           -> get_activity
+    create_lesson(chapter_id, ...)  -> create_activity (cours only,
+                                       no worksheet)
 
-- create_syllabus(thread_id, title, ...) -> {id}. Inserts a new row
-  bound to the supplied thread, returns the id. The supervisor calls
-  this first thing in the syllabus build flow so every downstream
-  call has a stable id to attach against.
-
-- create_chapter(syllabus_id, title, order_index, ...) -> {id}.
-  Inserts one chapter under a syllabus; the writer subagent calls
-  this exactly once per chapter it processes (and runs
-  list_chapters() first to avoid duplicating).
-
-- create_lesson(chapter_id, title, content, order_index, ...) -> {id}.
-  Inserts one lesson under a chapter, with the markdown body and
-  the structured pedagogical metadata the FE viewers consume.
-
-- create_activity(thread_id, title, mcqs, ...) -> {id}. Inserts a
-  worksheet-shaped activity row (mcqs / short answers / worked
-  example). Optionally bound to a `lesson_id` when the activity
-  grounds in an existing lesson, otherwise standalone. Used by the
-  deep-agent activity_maker subagent.
+The legacy worksheet-shaped create_activity signature (lesson_id +
+mcqs + short_answers + worked_example) is still accepted: the server
+detects the legacy shape and writes the worksheet jsonb without
+touching unity_id / body. This lets the activity-generator-tooled
+legacy agent keep producing worksheets attached to lessons.
 
 The server runs over stdio (one child process per long-lived API
-session) OR over streamable-http (when MCP_TRANSPORT is set, used by
-the Railway deploy). Auth: it uses the SUPABASE_SERVICE_ROLE_KEY
-because the API process owns this child and the API is already
-trusted with full DB access.
+session) OR over streamable-http (Railway). Auth: it uses the
+SUPABASE_SERVICE_ROLE_KEY because the API process owns this child
+and the API is already trusted with full DB access.
 """
 
 from __future__ import annotations
@@ -71,6 +61,13 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from supabase import Client, create_client
 
+from .embeddings import (
+    EMBEDDING_DIM,
+    content_hash,
+    embed_text as _embed_text,
+    vector_literal,
+)
+
 
 def _build_client() -> Client:
     """Build the Supabase client from environment variables.
@@ -79,7 +76,6 @@ def _build_client() -> Client:
     `cd apps/mcp-supabase && uv run mpfe-mcp-supabase` without
     re-exporting credentials.
     """
-    # Walk up from this file to find a `.env` near the repo root.
     here = os.path.dirname(os.path.abspath(__file__))
     for _ in range(6):
         candidate = os.path.join(here, ".env")
@@ -94,10 +90,6 @@ def _build_client() -> Client:
         or os.environ.get("SUPABASE_ANON_KEY")
     )
     if not url or not key:
-        # Failing here surfaces in the API's MCP-adapter logs as
-        # "MCP server exited at startup" — which is the right outcome,
-        # we don't want a half-configured tool quietly returning empty
-        # rows and making the agent hallucinate "lesson not found".
         print(
             "[mpfe-mcp-supabase] missing SUPABASE_URL or "
             "SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY",
@@ -107,16 +99,6 @@ def _build_client() -> Client:
     return create_client(url, key)
 
 
-# Transport selection. Local dev (and the original API spawn path)
-# uses stdio; Railway / any networked deploy uses `streamable-http`
-# with `MCP_TRANSPORT=streamable-http` and `PORT` injected by the host.
-#
-# The streamable-http transport's default host is 127.0.0.1 with DNS
-# rebinding protection limited to localhost — neither is useful inside
-# a container, so we override both when running over HTTP. The MCP
-# server is only ever reachable on Railway's private network (the
-# service has no public domain), so wildcarding the allowed hosts is
-# safe and avoids brittle hostname pinning.
 _TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio").strip().lower()
 _HOST = os.environ.get("MCP_HOST", "0.0.0.0")
 _PORT = int(os.environ.get("PORT", os.environ.get("MCP_PORT", "8000")))
@@ -139,28 +121,40 @@ _supabase: Client | None = None
 
 
 def _supa() -> Client:
-    """Lazy singleton so import-time costs are not paid until the first
-    tool call (FastMCP imports this module to discover @mcp.tool decorators).
-    """
+    """Lazy singleton so import-time costs are not paid until the
+    first tool call."""
     global _supabase
     if _supabase is None:
         _supabase = _build_client()
     return _supabase
 
 
+# ─── Activity / Unity selection columns ────────────────────────────
+
+_UNITY_COLS = "id,syllabus_id,title,order_index,outcomes,prerequisites"
+_ACTIVITY_LIST_COLS = (
+    "id,unity_id,title,order_index,learning_objectives,duration_min,"
+    "bloom_level"
+)
+_ACTIVITY_FULL_COLS = (
+    "id,unity_id,title,order_index,body,content,worksheet,"
+    "learning_objectives,prerequisites,key_terms,worked_example_seed,"
+    "assessment_idea,duration_min,bloom_level,review_required,"
+    "block_issues,critic_issues,depends_on,thread_id,lesson_id,kind,"
+    "lesson_title,prompt"
+)
+
+
+# ─── Syllabus reads ────────────────────────────────────────────────
+
+
 @mcp.tool()
 def list_syllabuses(thread_id: str) -> list[dict[str, Any]]:
-    """List the syllabuses bound to a thread.
-
-    For activity-generator-tooled threads, `thread_id` is the
-    `bound_syllabus_thread_id` of the activity thread — i.e. the
-    *source* syllabus thread, not the activity thread itself. The
-    caller is responsible for passing the correct id.
-    """
+    """List the syllabuses bound to a thread."""
     res = (
         _supa()
         .table("syllabuses")
-        .select("id,thread_id,title,description,created_at,updated_at")
+        .select("id,thread_id,title,description,audience,scope,pedagogy,created_at,updated_at")
         .eq("thread_id", thread_id)
         .order("created_at", desc=True)
         .execute()
@@ -169,15 +163,36 @@ def list_syllabuses(thread_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def list_chapters(syllabus_id: str) -> list[dict[str, Any]]:
-    """Ordered list of chapters in a syllabus.
+def get_syllabus(syllabus_id: str) -> dict[str, Any] | None:
+    """Fetch a single syllabus row by id."""
+    res = (
+        _supa()
+        .table("syllabuses")
+        .select(
+            "id,thread_id,title,description,audience,scope,pedagogy,"
+            "created_at,updated_at"
+        )
+        .eq("id", syllabus_id)
+        .maybe_single()
+        .execute()
+    )
+    return res.data if res and res.data else None
 
-    Returns id + title + order_index + outcomes. No lesson content.
+
+# ─── Unity reads ────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def list_unities(syllabus_id: str) -> list[dict[str, Any]]:
+    """Ordered list of unities in a syllabus.
+
+    Returns id + syllabus_id + title + order_index + outcomes +
+    prerequisites. No activity content.
     """
     res = (
         _supa()
-        .table("chapters")
-        .select("id,syllabus_id,title,order_index,outcomes")
+        .table("unities")
+        .select(_UNITY_COLS)
         .eq("syllabus_id", syllabus_id)
         .order("order_index", desc=False)
         .execute()
@@ -185,17 +200,98 @@ def list_chapters(syllabus_id: str) -> list[dict[str, Any]]:
     return list(res.data or [])
 
 
+# Backward-compat alias.
 @mcp.tool()
-def list_lessons(chapter_id: str) -> list[dict[str, Any]]:
-    """Ordered list of lessons in a chapter.
+def list_chapters(syllabus_id: str) -> list[dict[str, Any]]:
+    """DEPRECATED alias for ``list_unities``. Returns the same rows."""
+    return list_unities(syllabus_id)
 
-    Returns id + title + order_index + learning_objectives + duration_min.
-    Intentionally does NOT return the full markdown body — call
-    `get_lesson(lesson_id)` for that. Keeping the menu cheap means the
-    agent can survey 30+ lessons in one tool call without inflating the
-    LLM context.
+
+# ─── Activity reads ─────────────────────────────────────────────────
+
+
+@mcp.tool()
+def list_activities_for_unity(unity_id: str) -> list[dict[str, Any]]:
+    """Ordered list of activities under a unity.
+
+    Returns id + title + order_index + learning_objectives +
+    duration_min + bloom_level. Body / worksheet are intentionally
+    NOT returned to keep the agent's menu cheap; call
+    ``get_activity(activity_id)`` for the full row.
     """
     res = (
+        _supa()
+        .table("activities")
+        .select(_ACTIVITY_LIST_COLS)
+        .eq("unity_id", unity_id)
+        .order("order_index", desc=False)
+        .execute()
+    )
+    return list(res.data or [])
+
+
+@mcp.tool()
+def list_activities_for_thread(thread_id: str) -> list[dict[str, Any]]:
+    """Flat menu of all activities under the thread's first syllabus.
+
+    Joined with unity titles so the agent can present a coherent
+    picker. Falls back to an empty list when no syllabus exists.
+    """
+    syllabuses = list_syllabuses(thread_id)
+    if not syllabuses:
+        return []
+    syllabus_id = syllabuses[0]["id"]
+    units = list_unities(syllabus_id)
+    if not units:
+        return []
+    unit_titles = {u["id"]: u["title"] for u in units}
+    unit_orders = {u["id"]: u["order_index"] for u in units}
+    res = (
+        _supa()
+        .table("activities")
+        .select(_ACTIVITY_LIST_COLS)
+        .in_("unity_id", [u["id"] for u in units])
+        .order("order_index", desc=False)
+        .execute()
+    )
+    out: list[dict[str, Any]] = []
+    for row in res.data or []:
+        out.append(
+            {
+                **row,
+                "unity_title": unit_titles.get(row["unity_id"], ""),
+                "unity_order_index": unit_orders.get(row["unity_id"], 0),
+            }
+        )
+    out.sort(key=lambda x: (x["unity_order_index"], x["order_index"]))
+    return out
+
+
+@mcp.tool()
+def get_activity(activity_id: str) -> dict[str, Any] | None:
+    """Fetch a single activity row including the full body + worksheet."""
+    res = (
+        _supa()
+        .table("activities")
+        .select(_ACTIVITY_FULL_COLS)
+        .eq("id", activity_id)
+        .maybe_single()
+        .execute()
+    )
+    return res.data if res and res.data else None
+
+
+# Backward-compat aliases for the legacy lesson/chapter naming.
+@mcp.tool()
+def list_lessons(chapter_id: str) -> list[dict[str, Any]]:
+    """DEPRECATED alias for ``list_activities_for_unity``.
+
+    Treats ``chapter_id`` as the unity id. Also returns rows from the
+    legacy ``lessons`` table for any unity that still has lesson rows
+    pre-merge (empty in fresh installs).
+    """
+    new_rows = list_activities_for_unity(chapter_id)
+    legacy = (
         _supa()
         .table("lessons")
         .select(
@@ -205,67 +301,26 @@ def list_lessons(chapter_id: str) -> list[dict[str, Any]]:
         .order("order_index", desc=False)
         .execute()
     )
-    return list(res.data or [])
+    legacy_rows = list(legacy.data or [])
+    return [*new_rows, *legacy_rows]
 
 
 @mcp.tool()
 def list_lessons_for_thread(thread_id: str) -> list[dict[str, Any]]:
-    """Flat menu of all lessons across all chapters in a thread's syllabus.
-
-    Joined with chapter titles so the agent can present a coherent
-    picker (e.g. "Chapter 2 / Lesson 3 — MATCH queries") without a
-    second tool call. This is the *first* tool the agent should call
-    when the user asks for an activity without specifying a lesson.
-    """
-    syllabuses = list_syllabuses(thread_id)
-    if not syllabuses:
-        return []
-    syllabus_id = syllabuses[0]["id"]
-    chapters_res = (
-        _supa()
-        .table("chapters")
-        .select("id,title,order_index")
-        .eq("syllabus_id", syllabus_id)
-        .order("order_index", desc=False)
-        .execute()
-    )
-    chapters = list(chapters_res.data or [])
-    chapter_titles: dict[str, str] = {c["id"]: c["title"] for c in chapters}
-    chapter_orders: dict[str, int] = {c["id"]: c["order_index"] for c in chapters}
-    if not chapters:
-        return []
-    lessons_res = (
-        _supa()
-        .table("lessons")
-        .select("id,chapter_id,title,order_index,learning_objectives,duration_min")
-        .in_("chapter_id", [c["id"] for c in chapters])
-        .order("order_index", desc=False)
-        .execute()
-    )
-    out: list[dict[str, Any]] = []
-    for lesson in lessons_res.data or []:
-        out.append(
-            {
-                **lesson,
-                "chapter_title": chapter_titles.get(lesson["chapter_id"], ""),
-                "chapter_order_index": chapter_orders.get(lesson["chapter_id"], 0),
-            }
-        )
-    # Group by chapter order, then by lesson order — same display order
-    # the syllabus tree uses on the FE.
-    out.sort(key=lambda x: (x["chapter_order_index"], x["order_index"]))
-    return out
+    """DEPRECATED alias for ``list_activities_for_thread``."""
+    return list_activities_for_thread(thread_id)
 
 
 @mcp.tool()
 def get_lesson(lesson_id: str) -> dict[str, Any] | None:
-    """Fetch a single lesson row including the markdown `content` body.
+    """DEPRECATED alias for ``get_activity``.
 
-    Returns None when no lesson with that id exists (e.g. the agent
-    hallucinated a uuid). The agent prompt is told to treat None as a
-    signal to fall back to a different lesson rather than fabricating
-    content.
+    Falls back to the legacy ``lessons`` table for ids that predate
+    the activity merge.
     """
+    hit = get_activity(lesson_id)
+    if hit is not None:
+        return hit
     res = (
         _supa()
         .table("lessons")
@@ -281,32 +336,7 @@ def get_lesson(lesson_id: str) -> dict[str, Any] | None:
     return res.data if res and res.data else None
 
 
-# ─── Write tools (deep-agent supervisor + writer subagents) ─────────
-
-
-@mcp.tool()
-def get_syllabus(syllabus_id: str) -> dict[str, Any] | None:
-    """Fetch a single syllabus row by id, including the pedagogical
-    contract columns (audience / scope / pedagogy) the deep-agent
-    supervisor populates on create.
-
-    Returns None when no row exists. Used by the deep-agent supervisor
-    after `create_syllabus` to verify the row landed (and by the
-    writer subagent to read the audience profile back when the
-    supervisor's task description didn't carry it inline).
-    """
-    res = (
-        _supa()
-        .table("syllabuses")
-        .select(
-            "id,thread_id,title,description,audience,scope,pedagogy,"
-            "created_at,updated_at"
-        )
-        .eq("id", syllabus_id)
-        .maybe_single()
-        .execute()
-    )
-    return res.data if res and res.data else None
+# ─── Syllabus writes ───────────────────────────────────────────────
 
 
 @mcp.tool()
@@ -318,22 +348,7 @@ def create_syllabus(
     scope: dict[str, Any] | None = None,
     pedagogy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a syllabus row attached to a thread.
-
-    Args:
-        thread_id: UUID of the deep-agent thread the syllabus belongs to.
-        title: Course title (required, non-empty).
-        description: Short paragraph summarising the syllabus (optional).
-        audience: Optional pedagogical-contract object with shape
-            ``{level, prior_knowledge: list[str], language}`` —
-            ``level`` is one of ``school|undergrad|grad|professional``.
-        scope: Optional ``{duration_hours, target_outcome, constraints: list[str]}``.
-        pedagogy: Optional ``{style, assessment, differentiation: bool}``.
-
-    Returns the inserted row (``{id, thread_id, title, ...}``). The id
-    is the value the deep-agent supervisor embeds in the artifact card
-    tag at the end of the run.
-    """
+    """Create a syllabus row attached to a thread."""
     payload: dict[str, Any] = {
         "thread_id": thread_id,
         "title": title,
@@ -345,23 +360,69 @@ def create_syllabus(
         payload["scope"] = scope
     if pedagogy is not None:
         payload["pedagogy"] = pedagogy
-    res = (
-        _supa()
-        .table("syllabuses")
-        .insert(payload)
-        .execute()
-    )
+    res = _supa().table("syllabuses").insert(payload).execute()
     rows = list(res.data or [])
     if not rows:
-        # PostgREST returns an empty data array on insert when the row
-        # was rejected by RLS / a constraint without raising; surface
-        # that as an explicit error so the agent retries instead of
-        # silently moving on with a None id.
         raise RuntimeError(
             "create_syllabus insert returned no row — "
             "check the thread exists and service-role can write to syllabuses."
         )
     return rows[0]
+
+
+# ─── Unity writes ──────────────────────────────────────────────────
+
+
+def _insert_unity(
+    syllabus_id: str,
+    title: str,
+    order_index: int,
+    outcomes: list[str] | None,
+    prerequisites: list[str] | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "syllabus_id": syllabus_id,
+        "title": title,
+        "order_index": order_index,
+    }
+    if outcomes is not None:
+        payload["outcomes"] = outcomes
+    if prerequisites is not None:
+        payload["prerequisites"] = prerequisites
+    res = _supa().table("unities").insert(payload).execute()
+    rows = list(res.data or [])
+    if not rows:
+        raise RuntimeError(
+            "create_unity insert returned no row — "
+            "check the syllabus exists and service-role can write to unities."
+        )
+    row = rows[0]
+    try:
+        _upsert_unity_embedding(row, syllabus_id=syllabus_id)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[mpfe-mcp-supabase] unity_embeddings upsert failed: {exc}",
+            file=sys.stderr,
+        )
+    return row
+
+
+@mcp.tool()
+def create_unity(
+    syllabus_id: str,
+    title: str,
+    order_index: int,
+    outcomes: list[str] | None = None,
+    prerequisites: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create a unity row under a syllabus."""
+    return _insert_unity(
+        syllabus_id=syllabus_id,
+        title=title,
+        order_index=order_index,
+        outcomes=outcomes,
+        prerequisites=prerequisites,
+    )
 
 
 @mcp.tool()
@@ -372,47 +433,233 @@ def create_chapter(
     outcomes: list[str] | None = None,
     prerequisites: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Create a chapter row under a syllabus.
+    """DEPRECATED alias for ``create_unity``."""
+    return _insert_unity(
+        syllabus_id=syllabus_id,
+        title=title,
+        order_index=order_index,
+        outcomes=outcomes,
+        prerequisites=prerequisites,
+    )
 
-    Args:
-        syllabus_id: Parent syllabus UUID (returned by ``create_syllabus``).
-        title: Chapter title (required).
-        order_index: 0-based position in the chapter list (the FE
-            renders chapters sorted by this column).
-        outcomes: Optional list of chapter-level "students will be able
-            to..." statements.
-        prerequisites: Optional list of prior-knowledge strings.
 
-    Returns the inserted row (``{id, syllabus_id, title, order_index, ...}``).
-    Callers MUST run ``list_chapters(syllabus_id)`` before this tool
-    when there is any chance the chapter already exists (e.g. on a
-    retry of a previously-completed writer task) — duplicates are not
-    deduplicated server-side.
-    """
-    payload: dict[str, Any] = {
-        "syllabus_id": syllabus_id,
-        "title": title,
-        "order_index": order_index,
-    }
-    if outcomes is not None:
-        payload["outcomes"] = outcomes
-    if prerequisites is not None:
-        payload["prerequisites"] = prerequisites
+# ─── Activity writes (new merged shape) ────────────────────────────
+
+
+def _resolve_syllabus_id_for_unity(unity_id: str) -> str | None:
     res = (
         _supa()
-        .table("chapters")
-        .insert(payload)
+        .table("unities")
+        .select("syllabus_id")
+        .eq("id", unity_id)
+        .maybe_single()
+        .execute()
+    )
+    if not res or not res.data:
+        return None
+    return res.data.get("syllabus_id")
+
+
+def _embedding_source_for_activity(row: dict[str, Any]) -> str:
+    parts = [
+        row.get("title") or "",
+        row.get("body") or "",
+        ", ".join(
+            str(lo.get("text", lo) if isinstance(lo, dict) else lo)
+            for lo in (row.get("learning_objectives") or [])
+        ),
+        ", ".join(str(k) for k in (row.get("key_terms") or [])),
+    ]
+    return "\n".join(p for p in parts if p)
+
+
+def _embedding_source_for_unity(row: dict[str, Any]) -> str:
+    parts = [
+        row.get("title") or "",
+        ", ".join(str(o) for o in (row.get("outcomes") or [])),
+        ", ".join(str(p) for p in (row.get("prerequisites") or [])),
+    ]
+    return "\n".join(p for p in parts if p)
+
+
+def _upsert_activity_embedding(row: dict[str, Any], syllabus_id: str | None) -> None:
+    if not row.get("id") or not syllabus_id:
+        return
+    source = _embedding_source_for_activity(row)
+    h = content_hash(source)
+    vec = _embed_text(source)
+    payload = {
+        "activity_id": row["id"],
+        "syllabus_id": syllabus_id,
+        "content_hash": h,
+        "embedding": vector_literal(vec),
+    }
+    _supa().table("activity_embeddings").upsert(payload, on_conflict="activity_id").execute()
+
+
+def _upsert_unity_embedding(row: dict[str, Any], syllabus_id: str | None) -> None:
+    if not row.get("id") or not syllabus_id:
+        return
+    source = _embedding_source_for_unity(row)
+    h = content_hash(source)
+    vec = _embed_text(source)
+    payload = {
+        "unity_id": row["id"],
+        "syllabus_id": syllabus_id,
+        "content_hash": h,
+        "embedding": vector_literal(vec),
+    }
+    _supa().table("unity_embeddings").upsert(payload, on_conflict="unity_id").execute()
+
+
+@mcp.tool()
+def create_activity(
+    unity_id: str | None = None,
+    title: str = "",
+    content: str = "",
+    order_index: int = 0,
+    learning_objectives: list[dict[str, Any]] | None = None,
+    prerequisites: list[str] | None = None,
+    key_terms: list[str] | None = None,
+    worked_example_seed: str = "",
+    assessment_idea: str = "",
+    duration_min: int = 0,
+    bloom_level: str | None = None,
+    worksheet: dict[str, Any] | None = None,
+    # ─── legacy worksheet-only arguments ───
+    thread_id: str | None = None,
+    mcqs: list[dict[str, Any]] | None = None,
+    short_answers: list[dict[str, Any]] | None = None,
+    worked_example: dict[str, Any] | None = None,
+    intro: str = "",
+    lesson_id: str | None = None,
+    lesson_title: str = "",
+    prompt: str = "",
+    kind: str = "worksheet",
+) -> dict[str, Any]:
+    """Create an activity row.
+
+    Two flavours are accepted:
+
+    1. **New merged shape** (preferred): pass ``unity_id`` + ``title``
+       + ``content`` (markdown cours). ``worksheet`` is an optional
+       dict matching the ``Worksheet`` schema; if omitted the worksheet
+       can be filled in later via ``update_activity_worksheet``.
+
+    2. **Legacy worksheet-only shape**: pass ``thread_id`` + ``mcqs``
+       (plus optional ``short_answers`` / ``worked_example`` / etc.).
+       This path bypasses ``unity_id`` and writes the worksheet into
+       both the legacy ``content`` (jsonb) and the new ``worksheet``
+       (jsonb) columns so downstream readers see consistent data.
+    """
+    legacy = unity_id is None and (mcqs is not None or thread_id is not None)
+
+    if legacy:
+        label = lesson_title or title
+        we = worked_example or {"prompt": "", "steps": [], "final_answer": ""}
+        worksheet_json = {
+            "title": title or label,
+            "intro": intro,
+            "mcqs": mcqs or [],
+            "short_answers": short_answers or [],
+            "worked_example": {
+                "prompt": str(we.get("prompt", "")),
+                "steps": [str(s) for s in (we.get("steps") or [])],
+                "final_answer": str(we.get("final_answer", "")),
+            },
+        }
+        payload: dict[str, Any] = {
+            "thread_id": thread_id,
+            "kind": kind,
+            "prompt": prompt or title or label,
+            "lesson_title": label,
+            "content": worksheet_json,
+            "worksheet": worksheet_json,
+            "title": title or label,
+        }
+        if lesson_id is not None:
+            payload["lesson_id"] = lesson_id
+        res = _supa().table("activities").insert(payload).execute()
+        rows = list(res.data or [])
+        if not rows:
+            raise RuntimeError(
+                "create_activity (legacy) insert returned no row — "
+                "check thread + service-role permissions."
+            )
+        return rows[0]
+
+    if not unity_id:
+        raise RuntimeError(
+            "create_activity: either unity_id (new shape) or "
+            "thread_id+mcqs (legacy shape) is required."
+        )
+
+    payload: dict[str, Any] = {
+        "unity_id": unity_id,
+        "title": title,
+        "order_index": order_index,
+        "body": content,
+        "worked_example_seed": worked_example_seed,
+        "assessment_idea": assessment_idea,
+        "duration_min": duration_min,
+        "kind": "lesson",
+    }
+    if learning_objectives is not None:
+        payload["learning_objectives"] = learning_objectives
+    if prerequisites is not None:
+        payload["prerequisites"] = prerequisites
+    if key_terms is not None:
+        payload["key_terms"] = key_terms
+    if bloom_level is not None:
+        payload["bloom_level"] = bloom_level
+    if worksheet is not None:
+        payload["worksheet"] = worksheet
+    res = _supa().table("activities").insert(payload).execute()
+    rows = list(res.data or [])
+    if not rows:
+        raise RuntimeError(
+            "create_activity insert returned no row — "
+            "check the unity exists and service-role can write to activities."
+        )
+    row = rows[0]
+    try:
+        sid = _resolve_syllabus_id_for_unity(unity_id)
+        _upsert_activity_embedding(row, syllabus_id=sid)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[mpfe-mcp-supabase] activity_embeddings upsert failed: {exc}",
+            file=sys.stderr,
+        )
+    return row
+
+
+@mcp.tool()
+def update_activity_worksheet(
+    activity_id: str,
+    worksheet: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach (or replace) the worksheet jsonb on an existing activity.
+
+    Used by the activity_maker subagent after the writer has persisted
+    the cours body via ``create_activity``.
+    """
+    res = (
+        _supa()
+        .table("activities")
+        .update({"worksheet": worksheet})
+        .eq("id", activity_id)
         .execute()
     )
     rows = list(res.data or [])
     if not rows:
         raise RuntimeError(
-            "create_chapter insert returned no row — "
-            "check the syllabus exists and service-role can write to chapters."
+            f"update_activity_worksheet: no activity row with id {activity_id}."
         )
     return rows[0]
 
 
+# Backward-compat alias for the legacy writer subagent that called
+# `create_lesson(chapter_id, title, content, ...)`.
 @mcp.tool()
 def create_lesson(
     chapter_id: str,
@@ -427,174 +674,169 @@ def create_lesson(
     duration_min: int = 0,
     bloom_level: str | None = None,
 ) -> dict[str, Any]:
-    """Create a lesson row under a chapter.
+    """DEPRECATED alias for ``create_activity`` in the cours-only shape.
 
-    Args:
-        chapter_id: Parent chapter UUID (returned by ``create_chapter``).
-        title: Lesson title (required).
-        content: Markdown body of the lesson. Should follow the
-            standard MPFE lesson sections (Overview / Learning
-            objectives / Concepts / Worked example / Assessment).
-        order_index: 0-based position within the chapter.
-        learning_objectives: Optional list of ``{text, bloom_level}``.
-        prerequisites: Optional list of prior-knowledge strings.
-        key_terms: Optional list of glossary terms.
-        worked_example_seed: Short seed prompt the FE uses to generate
-            additional worked examples on demand.
-        assessment_idea: One-line summative assessment hook.
-        duration_min: Suggested duration in minutes (>=0).
-        bloom_level: Aggregate Bloom level for the lesson, one of
-            ``remember|understand|apply|analyze|evaluate|create``.
-
-    Returns the inserted row. Callers MUST run ``list_lessons(chapter_id)``
-    before this tool when retrying — there is no server-side dedupe.
+    Treats ``chapter_id`` as the unity id. Writes the markdown cours
+    body into ``activities.body`` (and leaves ``worksheet`` empty for
+    activity_maker to fill in).
     """
-    payload: dict[str, Any] = {
-        "chapter_id": chapter_id,
-        "title": title,
-        "content": content,
-        "order_index": order_index,
-        "worked_example_seed": worked_example_seed,
-        "assessment_idea": assessment_idea,
-        "duration_min": duration_min,
-    }
-    if learning_objectives is not None:
-        payload["learning_objectives"] = learning_objectives
-    if prerequisites is not None:
-        payload["prerequisites"] = prerequisites
-    if key_terms is not None:
-        payload["key_terms"] = key_terms
-    if bloom_level is not None:
-        payload["bloom_level"] = bloom_level
-    res = (
-        _supa()
-        .table("lessons")
-        .insert(payload)
-        .execute()
+    return create_activity(
+        unity_id=chapter_id,
+        title=title,
+        content=content,
+        order_index=order_index,
+        learning_objectives=learning_objectives,
+        prerequisites=prerequisites,
+        key_terms=key_terms,
+        worked_example_seed=worked_example_seed,
+        assessment_idea=assessment_idea,
+        duration_min=duration_min,
+        bloom_level=bloom_level,
     )
-    rows = list(res.data or [])
-    if not rows:
-        raise RuntimeError(
-            "create_lesson insert returned no row — "
-            "check the chapter exists and service-role can write to lessons."
-        )
-    return rows[0]
+
+
+# ─── Retrieval tools (pgvector + local sentence-transformers) ──────
 
 
 @mcp.tool()
-def create_activity(
-    thread_id: str,
-    title: str,
-    mcqs: list[dict[str, Any]],
-    short_answers: list[dict[str, Any]] | None = None,
-    worked_example: dict[str, Any] | None = None,
-    intro: str = "",
-    lesson_id: str | None = None,
-    lesson_title: str = "",
-    prompt: str = "",
-    kind: str = "worksheet",
-) -> dict[str, Any]:
-    """Create a worksheet-shaped activity row attached to a thread.
+def embed_text(text: str) -> list[float]:
+    """Return the 384-d embedding vector for a single text snippet.
 
-    Used by the deep-agent ``activity_maker`` subagent to persist a
-    standalone or lesson-grounded worksheet. The row's ``content``
-    JSONB is a ``Worksheet`` (see ``packages/shared/src/index.ts``):
-
-    .. code-block:: json
-
-        {
-          "title": "...",
-          "intro": "...",
-          "mcqs": [
-            {"question": "...", "options": ["A","B","C","D"],
-             "correct_index": 0, "explanation": "..."}, ...
-          ],
-          "short_answers": [
-            {"prompt": "...", "model_answer": "..."}, ...
-          ],
-          "worked_example": {
-            "prompt": "...", "steps": ["..."], "final_answer": "..."
-          }
-        }
-
-    Args:
-        thread_id: UUID of the deep-agent thread the activity belongs to.
-        title: Worksheet title (required, non-empty). Stored inside the
-            ``content`` JSON; the FE renders this at the top of the card.
-        mcqs: List of MCQ dicts. Each MCQ MUST have ``question``,
-            ``options`` (exactly 4 strings), ``correct_index``
-            (0..3), and an ``explanation``. The shared ``Worksheet``
-            schema rejects fewer than 1 MCQ or more than 8.
-        short_answers: Optional list of short-answer dicts, each
-            ``{prompt, model_answer}``. Up to 3.
-        worked_example: Optional ``{prompt, steps[], final_answer}``.
-            Pass ``None`` (or an object with empty ``steps``) when the
-            worksheet does not include a worked example.
-        intro: Optional one-line orientation paragraph shown above the
-            MCQs.
-        lesson_id: Optional UUID of the lesson this worksheet grounds
-            in. ``None`` for standalone worksheets that do not bind to
-            an existing lesson.
-        lesson_title: Denormalised lesson / topic title for the FE
-            card label. Defaults to ``title`` when not supplied so the
-            card always has something to display.
-        prompt: The user request that produced this activity (for
-            display under the card).
-        kind: Discriminator. Only ``"worksheet"`` is rendered today;
-            future kinds (``quiz``, ``flashcards``) drop in without a
-            schema migration but will not render until the FE knows
-            about them.
-
-    Returns the inserted row, including the generated ``id`` the
-    deep-agent supervisor embeds in the
-    ``<artifact kind="worksheet" id="…" />`` card it writes back to
-    the chat.
+    Wraps the local sentence-transformers model. Empty input returns a
+    zero vector.
     """
-    label = lesson_title or title
-    we = worked_example or {"prompt": "", "steps": [], "final_answer": ""}
-    content = {
-        "title": title,
-        "intro": intro,
-        "mcqs": mcqs,
-        "short_answers": short_answers or [],
-        "worked_example": {
-            "prompt": str(we.get("prompt", "")),
-            "steps": [str(s) for s in (we.get("steps") or [])],
-            "final_answer": str(we.get("final_answer", "")),
-        },
-    }
-    payload: dict[str, Any] = {
-        "thread_id": thread_id,
-        "kind": kind,
-        "prompt": prompt or title,
-        "lesson_title": label,
-        "content": content,
-    }
-    if lesson_id is not None:
-        payload["lesson_id"] = lesson_id
-    res = (
+    return _embed_text(text)
+
+
+def _find_related(
+    table: str,
+    id_column: str,
+    syllabus_id: str,
+    query_text: str,
+    top_k: int,
+    join_table: str,
+    join_select: str,
+) -> list[dict[str, Any]]:
+    vec = _embed_text(query_text)
+    if all(v == 0.0 for v in vec):
+        return []
+    lit = vector_literal(vec)
+    sql = (
+        f"select e.{id_column} as ref_id, "
+        f"       1 - (e.embedding <=> '{lit}'::vector) as similarity "
+        f"from public.{table} e "
+        f"where e.syllabus_id = %(syllabus_id)s "
+        f"order by e.embedding <=> '{lit}'::vector asc "
+        f"limit %(top_k)s"
+    )
+    try:
+        rpc = _supa().rpc(
+            "exec_select",
+            {"sql": sql, "params": {"syllabus_id": syllabus_id, "top_k": top_k}},
+        ).execute()
+        hits = list(rpc.data or [])
+    except Exception:
+        # The `exec_select` RPC may not exist; fall back to the
+        # PostgREST cosine-distance order filter using the embedding
+        # column directly. We retrieve all rows for the syllabus and
+        # order client-side.
+        res = (
+            _supa()
+            .table(table)
+            .select(f"{id_column},embedding")
+            .eq("syllabus_id", syllabus_id)
+            .execute()
+        )
+        rows = list(res.data or [])
+        scored: list[tuple[float, str]] = []
+        for r in rows:
+            emb = r.get("embedding")
+            if not emb:
+                continue
+            try:
+                if isinstance(emb, str):
+                    emb_list = [
+                        float(x) for x in emb.strip("[]").split(",") if x
+                    ]
+                else:
+                    emb_list = [float(x) for x in emb]
+            except Exception:
+                continue
+            if len(emb_list) != EMBEDDING_DIM:
+                continue
+            dot = sum(a * b for a, b in zip(emb_list, vec, strict=True))
+            scored.append((dot, r[id_column]))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        hits = [{"ref_id": ref_id, "similarity": sim} for sim, ref_id in scored[:top_k]]
+    if not hits:
+        return []
+    ids = [h["ref_id"] for h in hits]
+    join = (
         _supa()
-        .table("activities")
-        .insert(payload)
+        .table(join_table)
+        .select(join_select)
+        .in_("id", ids)
         .execute()
     )
-    rows = list(res.data or [])
-    if not rows:
-        raise RuntimeError(
-            "create_activity insert returned no row — "
-            "check the thread exists and service-role can write to activities."
-        )
-    return rows[0]
+    rows_by_id = {r["id"]: r for r in (join.data or [])}
+    out: list[dict[str, Any]] = []
+    for h in hits:
+        row = rows_by_id.get(h["ref_id"])
+        if not row:
+            continue
+        out.append({**row, "similarity": float(h.get("similarity", 0.0))})
+    return out
+
+
+@mcp.tool()
+def find_related_activities(
+    syllabus_id: str,
+    query_text: str,
+    top_k: int = 5,
+) -> list[dict[str, Any]]:
+    """Return activities in the same syllabus most similar to query_text.
+
+    Used by the writer subagent before generating a new activity to
+    avoid duplicating concepts already covered.
+    """
+    return _find_related(
+        table="activity_embeddings",
+        id_column="activity_id",
+        syllabus_id=syllabus_id,
+        query_text=query_text,
+        top_k=top_k,
+        join_table="activities",
+        join_select=(
+            "id,unity_id,title,order_index,learning_objectives,"
+            "key_terms,bloom_level,duration_min"
+        ),
+    )
+
+
+@mcp.tool()
+def find_related_unities(
+    syllabus_id: str,
+    query_text: str,
+    top_k: int = 5,
+) -> list[dict[str, Any]]:
+    """Return unities in the same syllabus most similar to query_text.
+
+    Used by the pedagogy_planner subagent to keep new unities
+    complementary rather than overlapping.
+    """
+    return _find_related(
+        table="unity_embeddings",
+        id_column="unity_id",
+        syllabus_id=syllabus_id,
+        query_text=query_text,
+        top_k=top_k,
+        join_table="unities",
+        join_select="id,syllabus_id,title,order_index,outcomes,prerequisites",
+    )
 
 
 def main() -> None:
-    """Entry point. Runs the MCP server on the configured transport.
-
-    Default is stdio (used when the API spawns this server as a child
-    process). Set `MCP_TRANSPORT=streamable-http` to expose the server
-    over HTTP — used by the Railway deployment, where the API connects
-    to the private domain `${{mcp-supabase.RAILWAY_PRIVATE_DOMAIN}}:$PORT/mcp`.
-    """
+    """Entry point. Runs the MCP server on the configured transport."""
     if _TRANSPORT in {"streamable-http", "streamable_http", "http"}:
         mcp.run(transport="streamable-http")
     elif _TRANSPORT == "sse":

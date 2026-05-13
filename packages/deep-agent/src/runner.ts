@@ -135,7 +135,7 @@ export interface DeepAgentTaskEndChunk {
  * `delete_file`, …) returned a `Command({update:{files:{...}}})`.
  *
  * The canvas FE consumes these to show subagent intermediate outputs
- * (`/pedagogy_plan.md`, `/lessons/<id>.md`, etc.) live as the agent
+ * (`/pedagogy_plan.md`, `/activities/<id>.md`, etc.) live as the agent
  * runs. Wire shape is a delta — `path → content`, with `null` content
  * meaning the file was deleted. Consumers merge this into a local
  * `Record<string, string>` snapshot to render the file tree.
@@ -401,8 +401,8 @@ const DEFAULT_DB_SCHEMA = "deep_agent";
  * Centralised here so adding a new MCP tool is one entry. Read tools
  * are dual-listed wherever an agent needs to verify or look up
  * existing rows. Write tools are scoped tightly: only the supervisor
- * calls `create_syllabus`; only the writer calls `create_chapter` /
- * `create_lesson`; only `activity_maker` calls `create_activity`.
+ * calls `create_syllabus`; only the writer calls `create_unity` /
+ * `create_activity`; only `activity_maker` calls `update_activity_worksheet`.
  *
  * `pedagogy_planner` intentionally has NO database tools — see
  * `prompts/pedagogy-planner.ts` for the rationale (it produces a
@@ -415,33 +415,35 @@ const MCP_TOOL_REGISTRY = {
     "create_syllabus",
     "get_syllabus",
     "list_syllabuses",
-    "list_chapters",
-    "list_lessons",
-    "get_lesson",
+    "list_unities",
+    "list_activities_for_unity",
+    "get_activity",
     // Capability B — Make an activity (grounding lookup + verification)
-    "list_lessons_for_thread",
+    "list_activities_for_thread",
   ] as const,
   writer: [
-    "list_chapters",
-    "list_lessons",
-    "get_lesson",
+    "list_unities",
+    "list_activities_for_unity",
+    "get_activity",
     "get_syllabus",
-    "create_chapter",
-    "create_lesson",
+    "create_unity",
+    "create_activity",
+    "find_related_activities",
+    "find_related_unities",
   ] as const,
   activity_maker: [
-    "get_lesson",
-    "list_lessons_for_thread",
-    "list_chapters",
-    "list_lessons",
+    "get_activity",
+    "list_activities_for_thread",
+    "list_unities",
+    "list_activities_for_unity",
     "get_syllabus",
-    "create_activity",
+    "update_activity_worksheet",
   ] as const,
   pedagogy_critic: [
-    "get_lesson",
+    "get_activity",
     "get_syllabus",
-    "list_chapters",
-    "list_lessons",
+    "list_unities",
+    "list_activities_for_unity",
   ] as const,
 } as const;
 
@@ -588,24 +590,25 @@ export async function createDeepAgentRunner(
    *
    * Tools below are the *additional* ones we hand each subagent:
    *   - pedagogy_planner: search tools (when configured); no DB.
-   *   - writer: MCP read + create tools for chapters/lessons.
-   *   - activity_maker: MCP read tools + create_activity.
+   *   - writer: MCP read + create tools for unities/activities,
+   *     plus find_related_activities for anti-duplication.
+   *   - activity_maker: MCP read tools + update_activity_worksheet.
    *   - pedagogy_critic: MCP read tools only (read-only by design).
    *
    * The supervisor is a *generalist conductor* — its prompt teaches
    * it to dispatch one of these specialists based on the user's
    * request. Some chats use only one specialist (e.g. *make me 5
    * MCQs on photosynthesis* → activity_maker only); others compose
-   * several (e.g. *build a syllabus and a worksheet for chapter 2
-   * lesson 1* → pedagogy_planner → writer × N → activity_maker).
+   * several (e.g. *build a syllabus and a worksheet for unity 2
+   * activity 1* → pedagogy_planner → writer × N → activity_maker).
    */
   const subagents = [
     {
       name: "pedagogy_planner",
       description:
         "Senior curriculum designer. Reads /user_profile.md, " +
-        "produces /pedagogy_plan.md (chapter-by-chapter plan with " +
-        "outcomes, lesson outlines, Bloom levels, durations). " +
+        "produces /pedagogy_plan.md (unity-by-unity plan with " +
+        "outcomes, activity outlines, Bloom levels, durations). " +
         (plannerHasSearch
           ? "Has web search (Serper) for grounding. "
           : "LLM-only, no web search. ") +
@@ -616,12 +619,13 @@ export async function createDeepAgentRunner(
     {
       name: "writer",
       description:
-        "Subject-matter writer. Takes one chapter spec (copy-pasted " +
+        "Subject-matter writer. Takes one unity spec (copy-pasted " +
         "from /pedagogy_plan.md by the supervisor) plus a syllabus_id " +
-        "and writes one chapter row + its lesson rows in the database. " +
-        "Always lists existing chapters/lessons first to stay " +
-        "idempotent on retries. Mirrors each lesson to /lessons/" +
-        "<lesson_id>.md so the supervisor can verify.",
+        "and writes one unity row + its activity rows (cours body) in " +
+        "the database. Calls find_related_activities before each " +
+        "create_activity to keep new content non-overlapping with " +
+        "existing rows in the same syllabus. Mirrors each activity " +
+        "to /activities/<activity_id>.md so the supervisor can verify.",
       prompt: buildWriterPrompt(),
       tools: writerMcpTools,
     },
@@ -629,12 +633,13 @@ export async function createDeepAgentRunner(
       name: "activity_maker",
       description:
         "Worksheet designer. Produces one MCQ / short-answer / " +
-        "worked-example worksheet per dispatch and persists it via " +
-        "create_activity. Two flavours decided by the supervisor: " +
-        "lesson-grounded (fetches lesson body via get_lesson before " +
-        "drafting questions) or standalone (no syllabus binding, " +
-        "generates from topic + audience). Mirrors output to " +
-        "/activities/<activity_id>.json.",
+        "worked-example worksheet per dispatch and attaches it to an " +
+        "existing activity row via update_activity_worksheet. Two " +
+        "flavours decided by the supervisor: activity-grounded " +
+        "(fetches the cours body via get_activity before drafting " +
+        "questions) or standalone (no syllabus binding, generates " +
+        "from topic + audience). Mirrors output to " +
+        "/activities/<activity_id>.worksheet.json.",
       prompt: buildActivityMakerPrompt(),
       tools: activityMakerMcpTools,
     },
@@ -642,7 +647,7 @@ export async function createDeepAgentRunner(
       name: "pedagogy_critic",
       description:
         "Read-only senior reviewer. Critiques a pedagogy plan, " +
-        "lesson body, chapter, or worksheet against the audience " +
+        "activity body, unity, or worksheet against the audience " +
         "profile and Bloom progression. Writes severity-tagged " +
         "findings to /critiques/<target>.md (block / revise / " +
         "polish) and returns a one-paragraph summary so the " +

@@ -8,6 +8,11 @@
 #                      network at $RAILWAY_PRIVATE_DOMAIN:$PORT/mcp)
 #
 # Set MCP_TRANSPORT=streamable-http on the Railway service to switch.
+#
+# Includes a CPU-only sentence-transformers stack so the `embed_text`
+# / `find_related_*` tools work without an external embedding API. The
+# `all-MiniLM-L6-v2` model is pre-downloaded into the image at build
+# time so cold-start does not hit Hugging Face from inside Railway.
 
 FROM python:3.12-slim AS base
 
@@ -19,17 +24,27 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    UV_NO_CACHE=1
+    UV_NO_CACHE=1 \
+    HF_HOME=/app/.hf_cache \
+    SENTENCE_TRANSFORMERS_HOME=/app/.hf_cache
 
 WORKDIR /app
 
 # Install deps first (cacheable across source-only edits). uv reads
-# pyproject.toml + uv.lock for a reproducible resolve.
+# pyproject.toml + uv.lock for a reproducible resolve. Configured to
+# pull CPU-only torch wheels so we don't drag in CUDA (~3 GB).
 COPY apps/mcp-supabase/pyproject.toml apps/mcp-supabase/uv.lock ./
 COPY apps/mcp-supabase/src ./src
 COPY apps/mcp-supabase/README.md ./README.md
 
-RUN uv sync --frozen --no-dev
+ENV UV_INDEX_STRATEGY=unsafe-best-match \
+    UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+
+RUN uv sync --no-dev
+
+# Pre-download the sentence-transformer model weights so the first
+# /find_related_* call doesn't have to fetch ~80 MB from Hugging Face.
+RUN uv run --no-sync python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 
 # Non-root for defense-in-depth.
 RUN useradd --create-home --shell /usr/sbin/nologin app \
