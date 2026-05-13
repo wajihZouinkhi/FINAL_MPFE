@@ -16,6 +16,7 @@ import {
   CircleDashed,
   FlaskConical,
   GraduationCap,
+  Hammer,
   ListFilter,
   Loader2,
   PauseCircle,
@@ -416,6 +417,14 @@ export default function ThreadsIndexPage() {
               </Link>
             </p>
           </div>
+          <Link
+            href="/manual"
+            className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-[12.5px] font-medium text-[var(--foreground)] transition hover:border-[var(--primary)] hover:text-[var(--primary)]"
+            title="Type each unity / activity name yourself, then generate one at a time. Uses indexing for anti-duplication."
+          >
+            <Hammer className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Manual workspace</span>
+          </Link>
           <button
             onClick={() => setModalOpen(true)}
             className="group inline-flex items-center gap-2 rounded-lg bg-[var(--primary)] px-3.5 py-2 text-[13px] font-semibold text-[var(--primary-foreground)] shadow-[0_8px_24px_-12px_rgba(246,110,96,0.7)] transition hover:translate-y-[-1px] hover:opacity-95 sm:px-3.5"
