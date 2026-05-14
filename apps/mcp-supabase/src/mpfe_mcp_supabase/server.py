@@ -412,16 +412,16 @@ def create_unity(
     syllabus_id: str,
     title: str,
     order_index: int,
-    outcomes: list[str] | None = None,
-    prerequisites: list[str] | None = None,
+    outcomes: list[Any] | str | None = None,
+    prerequisites: list[Any] | str | None = None,
 ) -> dict[str, Any]:
     """Create a unity row under a syllabus."""
     return _insert_unity(
         syllabus_id=syllabus_id,
         title=title,
         order_index=order_index,
-        outcomes=outcomes,
-        prerequisites=prerequisites,
+        outcomes=_normalize_str_list(outcomes),
+        prerequisites=_normalize_str_list(prerequisites),
     )
 
 
@@ -512,18 +512,49 @@ def _upsert_unity_embedding(row: dict[str, Any], syllabus_id: str | None) -> Non
     _supa().table("unity_embeddings").upsert(payload, on_conflict="unity_id").execute()
 
 
+def _split_str_to_list(raw: str) -> list[str]:
+    """Split a single string into a list of items.
+
+    The supervisor/writer LLM (Kimi K2.6) occasionally emits
+    ``learning_objectives`` as one big string instead of a list. We
+    accept this gracefully by splitting on common item separators —
+    newlines, semicolons, or bullet markers — falling back to a single
+    element if none are found.
+    """
+    text = raw.strip()
+    if not text:
+        return []
+    # bullet/newline split first
+    for sep in ("\n", ";", "\u2022"):
+        if sep in text:
+            parts = [p.strip(" \t-*\u2022").strip() for p in text.split(sep)]
+            return [p for p in parts if p]
+    # numbered list like "1) foo 2) bar 3) baz"
+    import re as _re
+
+    if _re.search(r"\b\d+[\.\)]\s", text):
+        parts = [p.strip(" \t-*\u2022").strip() for p in _re.split(r"\b\d+[\.\)]\s", text)]
+        parts = [p for p in parts if p]
+        if len(parts) >= 2:
+            return parts
+    return [text]
+
+
 def _normalize_learning_objectives(
-    los: list[Any] | None,
+    los: list[Any] | str | None,
 ) -> list[dict[str, Any]] | None:
     """Accept both ``["text1", "text2"]`` and ``[{"text": ...}, ...]``.
 
-    Writers (LLMs) sometimes emit a flat list of strings; the DB column
-    is jsonb so either shape works downstream, but we standardise on
-    the dict form here so the embedding source builder and any future
+    Writers (LLMs) sometimes emit a flat list of strings, sometimes a
+    single string blob, sometimes a list of dicts. The DB column is
+    jsonb so any shape works downstream, but we standardise on the
+    dict form here so the embedding source builder and any future
     consumers don't have to branch on type.
     """
     if los is None:
         return None
+    if isinstance(los, str):
+        los = _split_str_to_list(los)
     out: list[dict[str, Any]] = []
     for item in los:
         if isinstance(item, dict):
@@ -535,14 +566,17 @@ def _normalize_learning_objectives(
     return out
 
 
-def _normalize_str_list(items: list[Any] | None) -> list[str] | None:
+def _normalize_str_list(items: list[Any] | str | None) -> list[str] | None:
     """Coerce a list of any mix of strings/dicts to plain strings.
 
     For ``prerequisites`` / ``key_terms`` columns which are text[]; the
-    writer occasionally emits ``[{"text": "X"}]`` instead of ``["X"]``.
+    writer occasionally emits ``[{"text": "X"}]`` instead of ``["X"]``
+    or a single string blob.
     """
     if items is None:
         return None
+    if isinstance(items, str):
+        items = _split_str_to_list(items)
     out: list[str] = []
     for item in items:
         if isinstance(item, str):
@@ -567,9 +601,9 @@ def create_activity(
     title: str = "",
     content: str = "",
     order_index: int = 0,
-    learning_objectives: list[Any] | None = None,
-    prerequisites: list[Any] | None = None,
-    key_terms: list[Any] | None = None,
+    learning_objectives: list[Any] | str | None = None,
+    prerequisites: list[Any] | str | None = None,
+    key_terms: list[Any] | str | None = None,
     worked_example_seed: str = "",
     assessment_idea: str = "",
     duration_min: int = 0,
@@ -718,9 +752,9 @@ def create_lesson(
     title: str,
     content: str,
     order_index: int,
-    learning_objectives: list[Any] | None = None,
-    prerequisites: list[Any] | None = None,
-    key_terms: list[Any] | None = None,
+    learning_objectives: list[Any] | str | None = None,
+    prerequisites: list[Any] | str | None = None,
+    key_terms: list[Any] | str | None = None,
     worked_example_seed: str = "",
     assessment_idea: str = "",
     duration_min: int = 0,
