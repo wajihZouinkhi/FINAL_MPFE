@@ -49,10 +49,11 @@ ENV UV_INDEX_STRATEGY=first-match \
 
 RUN uv sync --no-dev
 
-# Note: the sentence-transformer model is downloaded lazily on the
-# first /find_related_* call (~80 MB from Hugging Face). Preloading
-# during build was removed because it intermittently fails the build
-# step on Railway with image-push timeouts on the large layer.
+# Preload the sentence-transformer model into the image so the FIRST
+# find_related_activities call doesn't hit a 13s cold start + Hugging
+# Face download. Without this, the supervisor's 60s MCP-call timeout
+# trips on the first request after deploy.
+RUN uv run --no-sync python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 
 # Non-root for defense-in-depth.
 RUN useradd --create-home --shell /usr/sbin/nologin app \

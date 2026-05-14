@@ -512,15 +512,64 @@ def _upsert_unity_embedding(row: dict[str, Any], syllabus_id: str | None) -> Non
     _supa().table("unity_embeddings").upsert(payload, on_conflict="unity_id").execute()
 
 
+def _normalize_learning_objectives(
+    los: list[Any] | None,
+) -> list[dict[str, Any]] | None:
+    """Accept both ``["text1", "text2"]`` and ``[{"text": ...}, ...]``.
+
+    Writers (LLMs) sometimes emit a flat list of strings; the DB column
+    is jsonb so either shape works downstream, but we standardise on
+    the dict form here so the embedding source builder and any future
+    consumers don't have to branch on type.
+    """
+    if los is None:
+        return None
+    out: list[dict[str, Any]] = []
+    for item in los:
+        if isinstance(item, dict):
+            out.append(item)
+        elif isinstance(item, str):
+            out.append({"text": item})
+        else:
+            out.append({"text": str(item)})
+    return out
+
+
+def _normalize_str_list(items: list[Any] | None) -> list[str] | None:
+    """Coerce a list of any mix of strings/dicts to plain strings.
+
+    For ``prerequisites`` / ``key_terms`` columns which are text[]; the
+    writer occasionally emits ``[{"text": "X"}]`` instead of ``["X"]``.
+    """
+    if items is None:
+        return None
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            # try common keys, else stringify
+            for k in ("text", "name", "value", "title"):
+                v = item.get(k)
+                if isinstance(v, str) and v:
+                    out.append(v)
+                    break
+            else:
+                out.append(str(item))
+        else:
+            out.append(str(item))
+    return out
+
+
 @mcp.tool()
 def create_activity(
     unity_id: str | None = None,
     title: str = "",
     content: str = "",
     order_index: int = 0,
-    learning_objectives: list[dict[str, Any]] | None = None,
-    prerequisites: list[str] | None = None,
-    key_terms: list[str] | None = None,
+    learning_objectives: list[Any] | None = None,
+    prerequisites: list[Any] | None = None,
+    key_terms: list[Any] | None = None,
     worked_example_seed: str = "",
     assessment_idea: str = "",
     duration_min: int = 0,
@@ -604,12 +653,15 @@ def create_activity(
         "duration_min": duration_min,
         "kind": "lesson",
     }
-    if learning_objectives is not None:
-        payload["learning_objectives"] = learning_objectives
-    if prerequisites is not None:
-        payload["prerequisites"] = prerequisites
-    if key_terms is not None:
-        payload["key_terms"] = key_terms
+    normalized_los = _normalize_learning_objectives(learning_objectives)
+    if normalized_los is not None:
+        payload["learning_objectives"] = normalized_los
+    normalized_prereqs = _normalize_str_list(prerequisites)
+    if normalized_prereqs is not None:
+        payload["prerequisites"] = normalized_prereqs
+    normalized_terms = _normalize_str_list(key_terms)
+    if normalized_terms is not None:
+        payload["key_terms"] = normalized_terms
     if bloom_level is not None:
         payload["bloom_level"] = bloom_level
     if worksheet is not None:
@@ -666,9 +718,9 @@ def create_lesson(
     title: str,
     content: str,
     order_index: int,
-    learning_objectives: list[dict[str, Any]] | None = None,
-    prerequisites: list[str] | None = None,
-    key_terms: list[str] | None = None,
+    learning_objectives: list[Any] | None = None,
+    prerequisites: list[Any] | None = None,
+    key_terms: list[Any] | None = None,
     worked_example_seed: str = "",
     assessment_idea: str = "",
     duration_min: int = 0,
