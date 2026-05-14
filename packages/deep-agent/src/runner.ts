@@ -406,8 +406,16 @@ const DEFAULT_DB_SCHEMA = "deep_agent";
  * Centralised here so adding a new MCP tool is one entry. Read tools
  * are dual-listed wherever an agent needs to verify or look up
  * existing rows. Write tools are scoped tightly: only the supervisor
- * calls `create_syllabus`; only the writer calls `create_unity` /
- * `create_activity`; only `activity_maker` calls `update_activity_worksheet`.
+ * calls `create_syllabus` / `update_syllabus`; only the writer
+ * inserts or fills unities and activities via `create_unity` /
+ * `update_unity` / `create_activity` / `update_activity`; only
+ * `activity_maker` calls `update_activity_worksheet`.
+ *
+ * The `update_*` tools exist for the placeholder-fill flow used by
+ * `POST /api/{syllabuses,unities,activities}/:id/generate`: the REST
+ * endpoint creates an empty row first (just title + parent fk) and
+ * the writer subagent then populates the existing row's body /
+ * outcomes / audience without inserting a duplicate.
  *
  * `pedagogy_planner` intentionally has NO database tools — see
  * `prompts/pedagogy-planner.ts` for the rationale (it produces a
@@ -418,6 +426,7 @@ const MCP_TOOL_REGISTRY = {
   supervisor: [
     // Capability A — Build a syllabus
     "create_syllabus",
+    "update_syllabus",
     "get_syllabus",
     "list_syllabuses",
     "list_unities",
@@ -432,7 +441,9 @@ const MCP_TOOL_REGISTRY = {
     "get_activity",
     "get_syllabus",
     "create_unity",
+    "update_unity",
     "create_activity",
+    "update_activity",
     "find_related_activities",
     "find_related_unities",
   ] as const,

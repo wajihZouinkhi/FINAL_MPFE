@@ -22,6 +22,11 @@ import { SupabaseModule } from "../supabase/supabase.module";
     ActivityAgentService,
     McpClientService,
   ],
-  exports: [GraphService],
+  // McpClientService is re-exported so ThreadsModule (specifically
+  // EntitiesService) can call MCP `embed_text` from the REST
+  // create-activity / create-unity paths, keeping the
+  // `activity_embeddings` / `unity_embeddings` tables in sync with
+  // rows inserted outside the agent flow.
+  exports: [GraphService, McpClientService],
 })
 export class GraphModule {}
