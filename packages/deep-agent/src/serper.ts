@@ -21,8 +21,12 @@ import * as cheerio from "cheerio";
 import type { DeepAgentTool } from "./mcp.js";
 
 export interface SerperConfig {
-  /** API key for serper.dev. Without it, `web_search` is omitted. */
+  /** API key for serper.dev. Without it, `web_search` falls back to
+   *  Tavily (if `tavilyApiKey` is set) or is omitted entirely. */
   apiKey?: string;
+  /** API key for tavily.com. When set, takes precedence over
+   *  `apiKey` (Serper). Without either, `web_search` is omitted. */
+  tavilyApiKey?: string;
 }
 
 interface SerperOrganic {
@@ -32,6 +36,7 @@ interface SerperOrganic {
 }
 
 const SERPER_ENDPOINT = "https://google.serper.dev/search";
+const TAVILY_ENDPOINT = "https://api.tavily.com/search";
 const FETCH_TIMEOUT_MS = 12_000;
 const SEARCH_TIMEOUT_MS = 15_000;
 const FETCH_MAX_BYTES = 200_000;
@@ -43,8 +48,9 @@ const FETCH_MAX_CHARS = 8_000;
  * "planner runs LLM-only" and adjust the prompt accordingly.
  */
 export function buildSearchTools(config: SerperConfig): DeepAgentTool[] {
-  if (!config.apiKey) return [];
-  const apiKey = config.apiKey;
+  const tavilyKey = config.tavilyApiKey;
+  const serperKey = config.apiKey;
+  if (!tavilyKey && !serperKey) return [];
 
   const webSearch = tool(
     async ({ query, num }: { query: string; num?: number }) => {
@@ -55,11 +61,41 @@ export function buildSearchTools(config: SerperConfig): DeepAgentTool[] {
         SEARCH_TIMEOUT_MS,
       );
       try {
+        if (tavilyKey) {
+          const res = await fetch(TAVILY_ENDPOINT, {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              Authorization: `Bearer ${tavilyKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              query,
+              max_results: limit,
+              search_depth: "basic",
+            }),
+          });
+          if (!res.ok) {
+            return JSON.stringify({
+              results: [],
+              error: `tavily ${res.status}`,
+            });
+          }
+          const data = (await res.json()) as {
+            results?: { title?: string; url?: string; content?: string }[];
+          };
+          const results = (data.results ?? []).slice(0, limit).map((r) => ({
+            title: r.title ?? "",
+            link: r.url ?? "",
+            snippet: r.content ?? "",
+          }));
+          return JSON.stringify({ results });
+        }
         const res = await fetch(SERPER_ENDPOINT, {
           method: "POST",
           signal: controller.signal,
           headers: {
-            "X-API-KEY": apiKey,
+            "X-API-KEY": serperKey as string,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ q: query, num: limit }),
@@ -90,8 +126,9 @@ export function buildSearchTools(config: SerperConfig): DeepAgentTool[] {
       name: "web_search",
       description:
         "Search the web for grounding sources before drafting the " +
-        "pedagogy plan. Returns the top organic results from Google " +
-        "(via serper.dev) as `{results: [{title, link, snippet}]}`. " +
+        "pedagogy plan. Returns the top organic results as " +
+        "`{results: [{title, link, snippet}]}`. Backed by Tavily when " +
+        "`TAVILY_API_KEY` is set, else serper.dev. " +
         "Use specific, scholarly queries (course-level keyword + " +
         '"syllabus" / "learning outcomes" / "Bloom"). Limit to 5 ' +
         "queries per planning run to keep the loop bounded.",
