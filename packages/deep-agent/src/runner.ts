@@ -417,10 +417,11 @@ const DEFAULT_DB_SCHEMA = "deep_agent";
  * the writer subagent then populates the existing row's body /
  * outcomes / audience without inserting a duplicate.
  *
- * `pedagogy_planner` intentionally has NO database tools — see
- * `prompts/pedagogy-planner.ts` for the rationale (it produces a
- * markdown plan only, the writer persists). `pedagogy_critic` is
- * read-only by design — see `prompts/pedagogy-critic.ts`.
+ * `pedagogy_planner` is read-only and gets only the two
+ * `find_related_*` retrieval tools (Partie B) so it can ground its
+ * plan against existing sibling content without ever inserting a
+ * row. `pedagogy_critic` is read-only by design — see
+ * `prompts/pedagogy-critic.ts`.
  */
 const MCP_TOOL_REGISTRY = {
   supervisor: [
@@ -434,6 +435,15 @@ const MCP_TOOL_REGISTRY = {
     "get_activity",
     // Capability B — Make an activity (grounding lookup + verification)
     "list_activities_for_thread",
+  ] as const,
+  pedagogy_planner: [
+    // Partie B: read-only retrieval so the planner can check existing
+    // sibling unities / activities in a placeholder-fill flow before
+    // deciding the unity / activity layout. No list / get / create
+    // tools — the planner's job is still to emit /pedagogy_plan.md,
+    // not to read or write rows.
+    "find_related_unities",
+    "find_related_activities",
   ] as const,
   writer: [
     "list_unities",
@@ -454,12 +464,22 @@ const MCP_TOOL_REGISTRY = {
     "list_activities_for_unity",
     "get_syllabus",
     "update_activity_worksheet",
+    // Partie B: surface near-duplicates within the syllabus before
+    // drafting a worksheet so the maker can adjust angle / scope when
+    // a sibling already covers the same ground.
+    "find_related_activities",
+    "find_related_unities",
   ] as const,
   pedagogy_critic: [
     "get_activity",
     "get_syllabus",
     "list_unities",
     "list_activities_for_unity",
+    // Partie B: let the critic check whether the artefact under
+    // review overlaps with an existing sibling in the same syllabus.
+    // Still read-only — no write tools.
+    "find_related_activities",
+    "find_related_unities",
   ] as const,
 } as const;
 
@@ -549,6 +569,7 @@ export async function createDeepAgentRunner(
   // supervisor's prompt will be told the DB tools are missing and
   // refuse to attempt a syllabus build.
   let supervisorMcpTools: DeepAgentTool[] = [];
+  let pedagogyPlannerMcpTools: DeepAgentTool[] = [];
   let writerMcpTools: DeepAgentTool[] = [];
   let activityMakerMcpTools: DeepAgentTool[] = [];
   let pedagogyCriticMcpTools: DeepAgentTool[] = [];
@@ -559,6 +580,10 @@ export async function createDeepAgentRunner(
       supervisorMcpTools = pickMcpTools(
         mcp.byName,
         MCP_TOOL_REGISTRY.supervisor,
+      );
+      pedagogyPlannerMcpTools = pickMcpTools(
+        mcp.byName,
+        MCP_TOOL_REGISTRY.pedagogy_planner,
       );
       writerMcpTools = pickMcpTools(mcp.byName, MCP_TOOL_REGISTRY.writer);
       activityMakerMcpTools = pickMcpTools(
@@ -572,6 +597,7 @@ export async function createDeepAgentRunner(
       mcpClose = mcp.close;
       console.log(
         `[deep-agent] MCP ready (supervisor=${supervisorMcpTools.length}, ` +
+          `pedagogy_planner=${pedagogyPlannerMcpTools.length}, ` +
           `writer=${writerMcpTools.length}, ` +
           `activity_maker=${activityMakerMcpTools.length}, ` +
           `pedagogy_critic=${pedagogyCriticMcpTools.length} tools).`,
@@ -608,11 +634,16 @@ export async function createDeepAgentRunner(
    * write_todos tools into every subagent automatically.
    *
    * Tools below are the *additional* ones we hand each subagent:
-   *   - pedagogy_planner: search tools (when configured); no DB.
+   *   - pedagogy_planner: search tools (when configured) +
+   *     find_related_unities / find_related_activities for sibling
+   *     awareness; no list/get/create/update tools.
    *   - writer: MCP read + create tools for unities/activities,
    *     plus find_related_activities for anti-duplication.
-   *   - activity_maker: MCP read tools + update_activity_worksheet.
-   *   - pedagogy_critic: MCP read tools only (read-only by design).
+   *   - activity_maker: MCP read tools + update_activity_worksheet,
+   *     plus find_related_activities / find_related_unities so it
+   *     can re-angle a worksheet when a sibling already covers it.
+   *   - pedagogy_critic: MCP read tools only (read-only by design),
+   *     including find_related_* for sibling-overlap checks.
    *
    * The supervisor is a *generalist conductor* — its prompt teaches
    * it to dispatch one of these specialists based on the user's
@@ -631,9 +662,14 @@ export async function createDeepAgentRunner(
         (plannerHasSearch
           ? "Has web search (Serper) for grounding. "
           : "LLM-only, no web search. ") +
-        "Does NOT touch the database.",
-      prompt: buildPedagogyPlannerPrompt({ hasSearch: plannerHasSearch }),
-      tools: searchTools,
+        "Has read-only find_related_unities / find_related_activities " +
+        "so it can check existing siblings in the same syllabus. " +
+        "Does NOT write to the database.",
+      prompt: buildPedagogyPlannerPrompt({
+        hasSearch: plannerHasSearch,
+        hasFindRelated: pedagogyPlannerMcpTools.length > 0,
+      }),
+      tools: [...searchTools, ...pedagogyPlannerMcpTools],
     },
     {
       name: "writer",

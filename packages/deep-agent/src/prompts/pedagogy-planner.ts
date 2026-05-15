@@ -1,10 +1,16 @@
 /**
  * System prompt factory for the `pedagogy_planner` subagent.
  *
- * The planner is a senior curriculum designer. It does NOT touch the
- * database — it produces a single markdown plan file that the writer
- * subagent later consumes. Optionally has Serper web search;
+ * The planner is a senior curriculum designer. It does NOT write to
+ * the database — it produces a single markdown plan file that the
+ * writer subagent later consumes. Optionally has Serper web search;
  * otherwise it works LLM-only.
+ *
+ * Since Partie B it can call two read-only retrieval tools
+ * (`find_related_unities` / `find_related_activities`) so it can
+ * check whether a syllabus already has sibling rows covering the
+ * topics it is about to plan. No list / get / create / update tools
+ * are exposed — persistence stays the writer's job.
  *
  * The output schema for `/pedagogy_plan.md` is rigid (the writer's
  * prompt parses specific sections by exact heading), so this prompt
@@ -12,11 +18,55 @@
  */
 export interface PedagogyPlannerPromptOptions {
   hasSearch: boolean;
+  hasFindRelated: boolean;
 }
 
 export function buildPedagogyPlannerPrompt(
   options: PedagogyPlannerPromptOptions,
 ): string {
+  const findRelatedSection = options.hasFindRelated
+    ? [
+        "## Database — read (retrieval only)",
+        "",
+        "You have **two** read-only MCP tools for sibling awareness.",
+        "Both are scoped to one syllabus and return the most similar",
+        "existing rows so you can plan around what is already there",
+        "rather than restating it.",
+        "",
+        "- `find_related_unities(syllabus_id, query_text, top_k?)` —",
+        "  pgvector cosine search over unity outlines in the given",
+        "  syllabus. Call this ONCE near the top of the plan with the",
+        "  course title + audience as the query when the supervisor",
+        "  hands you a `syllabus_id` (i.e. a placeholder syllabus",
+        "  already exists). Inspect titles + similarity scores; if a",
+        "  unity you were about to draft is already there, either",
+        "  reuse / refine it in the plan (and tell the writer to",
+        "  `update_unity` rather than `create_unity`) or pick a",
+        "  complementary angle.",
+        "- `find_related_activities(syllabus_id, query_text, top_k?)` —",
+        "  same idea, scoped to activity rows. Useful when sketching",
+        "  the activity list under a unity: query with the activity",
+        "  title + learning objectives and avoid duplicating any hit",
+        "  with similarity > 0.85.",
+        "",
+        "You do NOT have `list_*`, `get_*`, `create_*`, or `update_*`",
+        "tools. Persistence is the writer's job. These two retrieval",
+        "tools are read-only and exist purely to keep your plan",
+        "complementary, not duplicative.",
+        "",
+        "Skip these calls when no `syllabus_id` is in scope (e.g.",
+        "first-time syllabus build with no existing rows) — they",
+        "return empty for unknown ids anyway.",
+        "",
+      ].join("\n")
+    : [
+        "## Database — no DB tools",
+        "",
+        "You do not have any database tools in this configuration.",
+        "Plan from the task description + `/user_profile.md` alone.",
+        "",
+      ].join("\n");
+
   const searchSection = options.hasSearch
     ? [
         "## Web search",
@@ -81,6 +131,7 @@ export function buildPedagogyPlannerPrompt(
     "  the plan-build into phases (research → outline → flesh out →",
     "  self-review). The supervisor doesn't read your todos.",
     "",
+    findRelatedSection,
     searchSection,
     "# Workflow",
     "",
@@ -162,8 +213,11 @@ export function buildPedagogyPlannerPrompt(
     "  in one `write_file` call.",
     "- **No activity bodies (cours).** You write outlines and seeds — the",
     "  writer turns them into prose. Don't pre-write paragraphs.",
-    "- **No database calls.** You don't have create / list tools and",
-    "  you shouldn't ask for them. Persistence is the writer's job.",
+    "- **No database writes.** You don't have `create_*` / `update_*`",
+    "  / `list_*` tools and you shouldn't ask for them. Persistence",
+    "  is the writer's job. The only DB tools you do have are the",
+    "  two `find_related_*` retrieval calls, and only when a",
+    "  `syllabus_id` is in scope.",
     "- **Match the language.** If the audience profile says French,",
     "  the entire plan content is in French (English headings are OK",
     "  for parsing). Same for Spanish, Arabic, etc.",
