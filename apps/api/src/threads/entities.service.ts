@@ -455,6 +455,138 @@ export class EntitiesService {
     return (data?.thread_id as string | null) ?? null;
   }
 
+  // ─── curriculum outline (powers the curriculum-context block) ──────────────
+
+  /**
+   * Compact outline of one syllabus's full subtree, intended for the
+   * curriculum-context block that `ScopedGenerateService` injects
+   * into the supervisor's prompt before each `/generate` pass.
+   *
+   * Difference from `treeForSyllabus(...)`:
+   *
+   *   - Includes the syllabus's `audience` / `scope` / `pedagogy`
+   *     contract (treeForSyllabus only returns title + description).
+   *   - Includes per-unity `outcomes` / `prerequisites` so the agent
+   *     can match demarche pedagogique without a separate read.
+   *   - Includes per-activity `learning_objectives`, `key_terms`,
+   *     `bloom_level`, `duration_min`, and `body_len` (computed from
+   *     `body`) so the agent can see what's already covered without
+   *     us shipping the full markdown bodies (token cost).
+   *   - The `body` column is selected (because `body_len` is computed
+   *     in JS) but is NOT returned by this method.
+   *
+   * Single round-trip with two indexed queries
+   * (`select * from unities where syllabus_id=?` then
+   * `select * from activities where unity_id = any(?)`). For a
+   * syllabus with 10 unities × 5 activities = 50 rows, both queries
+   * are sub-millisecond on the eu-west-1 pooler.
+   */
+  async getSyllabusOutline(syllabusId: string): Promise<{
+    syllabus: {
+      id: string;
+      title: string;
+      description: string;
+      audience: unknown;
+      scope: unknown;
+      pedagogy: unknown;
+    };
+    unities: Array<{
+      id: string;
+      title: string;
+      order_index: number;
+      outcomes: unknown;
+      prerequisites: unknown;
+      activities: Array<{
+        id: string;
+        title: string;
+        order_index: number;
+        body_len: number;
+        learning_objectives: unknown;
+        key_terms: unknown;
+        bloom_level: unknown;
+        duration_min: unknown;
+      }>;
+    }>;
+  }> {
+    const { data: syllabusRow, error: sErr } = await this.supa.client
+      .from("syllabuses")
+      .select("id, title, description, audience, scope, pedagogy")
+      .eq("id", syllabusId)
+      .maybeSingle();
+    if (sErr) throw sErr;
+    if (!syllabusRow) {
+      throw new NotFoundException(`Syllabus ${syllabusId} not found`);
+    }
+
+    const { data: unities, error: uErr } = await this.supa.client
+      .from("unities")
+      .select("id, title, order_index, outcomes, prerequisites")
+      .eq("syllabus_id", syllabusId)
+      .order("order_index", { ascending: true });
+    if (uErr) throw uErr;
+
+    const unityIds = (unities ?? []).map((u) => u.id as string);
+    const { data: activities, error: aErr } = unityIds.length
+      ? await this.supa.client
+          .from("activities")
+          .select(
+            "id, unity_id, title, order_index, body, learning_objectives, key_terms, bloom_level, duration_min",
+          )
+          .in("unity_id", unityIds)
+          .order("order_index", { ascending: true })
+      : { data: [], error: null };
+    if (aErr) throw aErr;
+
+    const byUnity = new Map<
+      string,
+      Array<{
+        id: string;
+        title: string;
+        order_index: number;
+        body_len: number;
+        learning_objectives: unknown;
+        key_terms: unknown;
+        bloom_level: unknown;
+        duration_min: unknown;
+      }>
+    >();
+    for (const a of activities ?? []) {
+      const uid = a.unity_id as string;
+      const body = (a.body as string | null) ?? "";
+      const arr = byUnity.get(uid) ?? [];
+      arr.push({
+        id: a.id as string,
+        title: a.title as string,
+        order_index: (a.order_index as number) ?? 0,
+        body_len: body.length,
+        learning_objectives: a.learning_objectives,
+        key_terms: a.key_terms,
+        bloom_level: a.bloom_level,
+        duration_min: a.duration_min,
+      });
+      byUnity.set(uid, arr);
+    }
+
+    return {
+      syllabus: {
+        id: syllabusRow.id as string,
+        title: syllabusRow.title as string,
+        description: (syllabusRow.description as string | null) ?? "",
+        audience: syllabusRow.audience,
+        scope: syllabusRow.scope,
+        pedagogy: syllabusRow.pedagogy,
+      },
+      unities: (unities ?? []).map((u) => ({
+        id: u.id as string,
+        title: u.title as string,
+        order_index: (u.order_index as number) ?? 0,
+        outcomes: u.outcomes,
+        prerequisites: u.prerequisites,
+        activities: byUnity.get(u.id as string) ?? [],
+      })),
+    };
+  }
+
   // ─── list + tree (powers the manual workspace UI) ──────────────────────────
 
   /** List all syllabuses, newest first. Powers the `/manual` index page. */
