@@ -31,6 +31,12 @@ jobs:
       - name: Build shared package
         run: pnpm --filter @mpfe/shared build
 
+      - name: Build deep-agent package
+        # apps/api's typecheck imports from @mpfe/deep-agent, which exposes
+        # `./dist/index.d.ts` via the `types` field in its package.json. The
+        # typecheck step therefore needs the deep-agent dist on disk.
+        run: pnpm --filter @mpfe/deep-agent build
+
       - name: Typecheck
         run: pnpm -r typecheck
 

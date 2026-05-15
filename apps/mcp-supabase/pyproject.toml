@@ -14,6 +14,11 @@ dependencies = [
     # response object.
     "supabase>=2.7.0",
     "python-dotenv>=1.0.0",
+    # CPU-only PyTorch + sentence-transformers powers the local 384-d
+    # `all-MiniLM-L6-v2` embedding model used by the find_related_*
+    # retrieval tools. The model weights themselves are pre-downloaded
+    # into the Docker image at build time so cold start is fast.
+    "sentence-transformers>=3.0.0",
 ]
 
 [project.scripts]
