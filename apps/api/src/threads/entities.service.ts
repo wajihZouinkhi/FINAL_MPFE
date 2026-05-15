@@ -233,4 +233,114 @@ export class EntitiesService {
     if (error) throw error;
     return (data?.thread_id as string | null) ?? null;
   }
+
+  // ─── list + tree (powers the manual workspace UI) ──────────────────────────
+
+  /** List all syllabuses, newest first. Powers the `/manual` index page. */
+  async listSyllabuses(): Promise<
+    Array<{
+      id: string;
+      title: string;
+      description: string;
+      thread_id: string | null;
+      created_at: string;
+    }>
+  > {
+    const { data, error } = await this.supa.client
+      .from("syllabuses")
+      .select("id, title, description, thread_id, created_at")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    return (data ?? []) as Array<{
+      id: string;
+      title: string;
+      description: string;
+      thread_id: string | null;
+      created_at: string;
+    }>;
+  }
+
+  /**
+   * Return the post-merge tree for a syllabus: syllabus row + its
+   * unities (renamed chapters), each with its activities (cours body +
+   * worksheet jsonb).
+   *
+   * Powers the `/manual/[syllabusId]` workspace and the `name first,
+   * generate second` flow — distinct from `snapshotBySyllabusId()`
+   * which still returns the legacy chapters/lessons shape consumed
+   * by the existing read-only viewer.
+   */
+  async treeForSyllabus(syllabusId: string): Promise<{
+    syllabus: {
+      id: string;
+      title: string;
+      description: string;
+      thread_id: string | null;
+    };
+    unities: Array<{
+      id: string;
+      syllabus_id: string;
+      title: string;
+      order_index: number;
+      activities: Array<{
+        id: string;
+        unity_id: string;
+        title: string;
+        order_index: number;
+        body: string | null;
+        worksheet: unknown;
+      }>;
+    }>;
+  }> {
+    const syllabus = await this.getSyllabus(syllabusId);
+
+    const { data: unities, error: uErr } = await this.supa.client
+      .from("unities")
+      .select("id, syllabus_id, title, order_index")
+      .eq("syllabus_id", syllabusId)
+      .order("order_index", { ascending: true });
+    if (uErr) throw uErr;
+
+    const unityIds = (unities ?? []).map((u) => u.id as string);
+    const { data: activities, error: aErr } = unityIds.length
+      ? await this.supa.client
+          .from("activities")
+          .select("id, unity_id, title, order_index, body, worksheet")
+          .in("unity_id", unityIds)
+          .order("order_index", { ascending: true })
+      : { data: [], error: null };
+    if (aErr) throw aErr;
+
+    const byUnity = new Map<string, Array<(typeof activities)[number]>>();
+    for (const a of activities ?? []) {
+      const uid = a.unity_id as string;
+      const arr = byUnity.get(uid) ?? [];
+      arr.push(a);
+      byUnity.set(uid, arr);
+    }
+
+    return {
+      syllabus: {
+        id: syllabus.id,
+        title: syllabus.title,
+        description: syllabus.description,
+        thread_id: syllabus.thread_id,
+      },
+      unities: (unities ?? []).map((u) => ({
+        id: u.id as string,
+        syllabus_id: u.syllabus_id as string,
+        title: u.title as string,
+        order_index: (u.order_index as number) ?? 0,
+        activities: (byUnity.get(u.id as string) ?? []).map((a) => ({
+          id: a.id as string,
+          unity_id: a.unity_id as string,
+          title: a.title as string,
+          order_index: (a.order_index as number) ?? 0,
+          body: (a.body as string | null) ?? null,
+          worksheet: a.worksheet,
+        })),
+      })),
+    };
+  }
 }

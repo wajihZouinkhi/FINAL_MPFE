@@ -64,6 +64,7 @@ export class DeepAgentService implements OnModuleInit, OnModuleDestroy {
       dbUrl: this.cfg.supabaseDbUrl,
       mcp: this.buildMcpConfig(),
       serperApiKey: this.cfg.serperApiKey,
+      tavilyApiKey: this.cfg.tavilyApiKey,
     });
     this.logger.log(
       `Deep agent runner initialised (model=${llm.model} @ ${llm.baseUrl}).`,

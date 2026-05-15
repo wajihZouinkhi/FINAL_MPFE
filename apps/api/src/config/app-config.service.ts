@@ -11,6 +11,7 @@ const Schema = z.object({
   SUPABASE_DB_URL: z.string().min(1),
 
   SERPR_API_KEY: z.string().min(1).optional(),
+  TAVILY_API_KEY: z.string().min(1).optional(),
 
   REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
 
@@ -63,6 +64,9 @@ export class AppConfigService {
   }
   get serperApiKey() {
     return this.env.SERPR_API_KEY;
+  }
+  get tavilyApiKey() {
+    return this.env.TAVILY_API_KEY;
   }
   get redisUrl() {
     return this.env.REDIS_URL;

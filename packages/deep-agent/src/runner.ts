@@ -275,6 +275,11 @@ export interface DeepAgentRunnerOptions {
    * `cfg.serperApiKey` straight through.
    */
   serperApiKey?: string;
+  /**
+   * Tavily API key. When set, takes precedence over `serperApiKey`
+   * for the pedagogy_planner subagent's web_search tool.
+   */
+  tavilyApiKey?: string;
 }
 
 export interface DeepAgentRunner {
@@ -573,7 +578,10 @@ export async function createDeepAgentRunner(
     );
   }
 
-  const serperConfig: SerperConfig = { apiKey: options.serperApiKey };
+  const serperConfig: SerperConfig = {
+    apiKey: options.serperApiKey,
+    tavilyApiKey: options.tavilyApiKey,
+  };
   const searchTools = buildSearchTools(serperConfig);
   const plannerHasSearch = searchTools.length > 0;
 

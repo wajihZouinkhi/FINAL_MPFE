@@ -37,13 +37,22 @@ COPY apps/mcp-supabase/pyproject.toml apps/mcp-supabase/uv.lock ./
 COPY apps/mcp-supabase/src ./src
 COPY apps/mcp-supabase/README.md ./README.md
 
-ENV UV_INDEX_STRATEGY=unsafe-best-match \
-    UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+# Force CPU-only torch by routing the PyTorch index FIRST. `first-match`
+# means uv stops at the first registry that has the package, so torch
+# (and friends) come from the CPU index instead of PyPI's GPU build.
+# Without this, even with `--extra-index-url`, uv prefers the higher
+# PyPI version (~3 GB with CUDA libs), pushing the image past Railway's
+# 4 GB deploy limit and silently failing the deploy phase.
+ENV UV_INDEX_STRATEGY=first-match \
+    UV_INDEX_URL=https://download.pytorch.org/whl/cpu \
+    UV_EXTRA_INDEX_URL=https://pypi.org/simple
 
 RUN uv sync --no-dev
 
-# Pre-download the sentence-transformer model weights so the first
-# /find_related_* call doesn't have to fetch ~80 MB from Hugging Face.
+# Preload the sentence-transformer model into the image so the FIRST
+# find_related_activities call doesn't hit a 13s cold start + Hugging
+# Face download. Without this, the supervisor's 60s MCP-call timeout
+# trips on the first request after deploy.
 RUN uv run --no-sync python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 
 # Non-root for defense-in-depth.
