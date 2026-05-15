@@ -42,9 +42,30 @@ export class SyllabusesController {
     private readonly scoped: ScopedGenerateService,
   ) {}
 
+  /**
+   * List all syllabuses (newest first). Powers the `/manual`
+   * workspace index page so a teacher can resume any prior
+   * name-first build without remembering the syllabus id.
+   */
+  @Get()
+  list() {
+    return this.entities.listSyllabuses();
+  }
+
   @Get(":id/snapshot")
   snapshot(@Param("id") id: string) {
     return this.threads.snapshotBySyllabusId(id);
+  }
+
+  /**
+   * Post-merge tree for the syllabus: returns syllabus + unities +
+   * activities (with cours body + worksheet jsonb). Distinct from
+   * `/snapshot` which still returns the legacy chapters/lessons
+   * shape for the read-only viewer.
+   */
+  @Get(":id/tree")
+  tree(@Param("id") id: string) {
+    return this.entities.treeForSyllabus(id);
   }
 
   /**

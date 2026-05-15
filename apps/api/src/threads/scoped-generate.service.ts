@@ -6,6 +6,11 @@ import {
 import type { Response } from "express";
 import { DeepAgentService } from "../agents-v2/deepagent.service";
 import { EntitiesService } from "./entities.service";
+import {
+  buildCurriculumContext,
+  type GenerationTarget,
+  type SyllabusOutline,
+} from "./curriculum-context";
 
 export type GenerateScope = "syllabus" | "unity" | "activity";
 
@@ -55,7 +60,35 @@ export class ScopedGenerateService {
     // Resolve parent ids so the supervisor knows what to fill in.
     const ctx = await this.resolveContext(scope, entityId);
 
-    const prompt = this.buildScopedPrompt(scope, entityId, ctx);
+    // Pre-load the curriculum outline for the syllabus so the
+    // supervisor enters the pass already knowing what siblings
+    // exist. Empty string when there's nothing meaningful to
+    // inject (first-time generate on an empty syllabus). Best-
+    // effort: a failure here MUST NOT block generation — log and
+    // continue without the block.
+    let curriculumContext = "";
+    if (ctx.syllabusId) {
+      try {
+        const outline = await this.entities.getSyllabusOutline(
+          ctx.syllabusId,
+        );
+        const target = makeTarget(scope, ctx);
+        if (target) {
+          curriculumContext = buildCurriculumContext(outline, target);
+        }
+      } catch (err) {
+        this.logger.warn(
+          `curriculum-context pre-load failed (syllabus_id=${ctx.syllabusId}): ${(err as Error).message}`,
+        );
+      }
+    }
+
+    const prompt = this.buildScopedPrompt(
+      scope,
+      entityId,
+      ctx,
+      curriculumContext,
+    );
 
     // The deep-agent runner is keyed by thread_id for checkpointing.
     // We use the entity_id itself as the synthetic thread_id when no
@@ -165,6 +198,7 @@ export class ScopedGenerateService {
       unityTitle: string | null;
       activityTitle: string | null;
     },
+    curriculumContext: string = "",
   ): string {
     const lines: string[] = [];
     lines.push(
@@ -190,20 +224,58 @@ export class ScopedGenerateService {
     }
     lines.push("");
 
+    // Inject the curriculum-context block (when non-empty) BEFORE
+    // the scope-specific instructions so the agent reads "what
+    // already exists" before "what to do". The formatter returns
+    // empty when there's nothing meaningful to inject.
+    if (curriculumContext) {
+      lines.push(curriculumContext);
+      lines.push("");
+    }
+
     if (scope === "syllabus") {
       lines.push(
-        `An empty syllabus row was created via POST /api/syllabuses with the title above. Please run the standard \"build a syllabus\" recipe for this syllabus: dispatch the pedagogy_planner to produce /pedagogy_plan.md, then the writer to create the unities + activities (calling find_related_activities before each create to avoid duplicating existing content under syllabus_id=${ctx.syllabusId}). Use create_unity / create_activity with the existing syllabus_id=${ctx.syllabusId}; do NOT call create_syllabus.`,
+        `An empty syllabus row was created via POST /api/syllabuses with the title above. Please run the standard \"build a syllabus\" recipe for this syllabus: first call update_syllabus(syllabus_id=${ctx.syllabusId}, audience=..., scope=..., pedagogy=...) to fill in the top-level metadata on the existing row (do NOT call create_syllabus), then dispatch the pedagogy_planner to produce /pedagogy_plan.md, then the writer to create the unities + activities (calling find_related_activities before each create to avoid duplicating existing content under syllabus_id=${ctx.syllabusId}). Use create_unity / create_activity with the existing syllabus_id=${ctx.syllabusId}.`,
       );
     } else if (scope === "unity") {
       lines.push(
-        `An empty unity row exists under syllabus_id=${ctx.syllabusId} with the title above. Please run the writer subagent scoped to *this unity only*: produce 2-4 activities under unity_id=${ctx.unityId} with cours bodies (use create_activity with the existing unity_id). The writer MUST call find_related_activities(syllabus_id=${ctx.syllabusId}, query_text=<title + objectives>) before each create. Do NOT touch other unities.`,
+        `An empty unity row (unity_id=${ctx.unityId}) exists under syllabus_id=${ctx.syllabusId} with the title above. Please run the writer subagent scoped to *this unity only*. First, the writer should call update_unity(unity_id=${ctx.unityId}, outcomes=[...], prerequisites=[...]) to fill in the unity's metadata on the existing row (do NOT call create_unity \u2014 the row is already there). Then produce 2-4 activities under unity_id=${ctx.unityId} with cours bodies (use create_activity with the existing unity_id). The writer MUST call find_related_activities(syllabus_id=${ctx.syllabusId}, query_text=<title + objectives>) before each create. Do NOT touch other unities.`,
       );
     } else if (scope === "activity") {
       lines.push(
-        `An empty activity row exists with the title above. Please populate its cours body + worksheet: dispatch the writer subagent to fill in the markdown cours via update_activity (or, if the row's body is empty, by writing to the existing row \u2014 do NOT create a duplicate row), then dispatch the activity_maker subagent to attach the worksheet jsonb via update_activity_worksheet(activity_id=${ctx.activityId}, worksheet={...}). The writer MUST call find_related_activities(syllabus_id=${ctx.syllabusId}, query_text=<title + objectives>) before composing the cours.`,
+        `An empty activity row (activity_id=${ctx.activityId}) exists with the title above. Please populate its cours body + worksheet on the EXISTING row \u2014 do NOT create a duplicate. Dispatch the writer subagent to fill in the markdown cours via update_activity(activity_id=${ctx.activityId}, content=\"...\", learning_objectives=[...], key_terms=[...], ...); then dispatch the activity_maker subagent to attach the worksheet jsonb via update_activity_worksheet(activity_id=${ctx.activityId}, worksheet={...}). The writer MUST call find_related_activities(syllabus_id=${ctx.syllabusId}, query_text=<title + objectives>) before composing the cours.`,
       );
     }
 
     return lines.join("\n");
   }
 }
+
+/**
+ * Build the `GenerationTarget` discriminated union expected by
+ * `buildCurriculumContext` from the resolved scope + context.
+ * Returns `null` when ids are missing (treat as "skip the block").
+ */
+function makeTarget(
+  scope: GenerateScope,
+  ctx: {
+    syllabusId: string | null;
+    unityId: string | null;
+    activityId: string | null;
+  },
+): GenerationTarget | null {
+  if (scope === "syllabus" && ctx.syllabusId) {
+    return { kind: "syllabus", syllabus_id: ctx.syllabusId };
+  }
+  if (scope === "unity" && ctx.unityId) {
+    return { kind: "unity", unity_id: ctx.unityId };
+  }
+  if (scope === "activity" && ctx.activityId) {
+    return { kind: "activity", activity_id: ctx.activityId };
+  }
+  return null;
+}
+
+// Re-export types so tests / callers can build mocks without
+// depending on the internal curriculum-context module path.
+export type { GenerationTarget, SyllabusOutline };
