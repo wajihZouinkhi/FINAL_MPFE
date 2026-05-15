@@ -40,11 +40,14 @@ export function buildSupervisorPrompt(
     ? "**pedagogy_planner** — senior curriculum designer. Web search ON " +
       "(`web_search`, `web_fetch` available). Reads `/user_profile.md` " +
       "if present; writes the full unity-by-unity plan to " +
-      "`/pedagogy_plan.md`. NEVER touches the database."
+      "`/pedagogy_plan.md`. Has read-only `find_related_unities` / " +
+      "`find_related_activities` to check siblings in an existing " +
+      "syllabus. NEVER writes to the database."
     : "**pedagogy_planner** — senior curriculum designer (LLM-only, no " +
       "web search). Reads `/user_profile.md` if present; writes the " +
-      "full unity-by-unity plan to `/pedagogy_plan.md`. NEVER " +
-      "touches the database.";
+      "full unity-by-unity plan to `/pedagogy_plan.md`. Has read-only " +
+      "`find_related_unities` / `find_related_activities` to check " +
+      "siblings in an existing syllabus. NEVER writes to the database.";
 
   return [
     "# Identity",
