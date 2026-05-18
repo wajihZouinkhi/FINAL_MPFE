@@ -16,17 +16,42 @@
  */
 
 /**
+ * Coarse failure category for a `task-end` chunk. Mirrors the runner-
+ * side `DeepAgentTaskFailureKind`. The FE never produces this — it's
+ * only read off incoming chunks to colour the timeline row.
+ */
+export type DeepAgentTaskFailureKind =
+  | "timeout"
+  | "tool-call-error"
+  | "invalid-output"
+  | "unknown";
+
+/**
  * Wire shape of one streamed chunk. Mirrors `DeepAgentChunk` from
  * `@mpfe/deep-agent/runner.ts` but kept inline so the web bundle
  * doesn't pull in the deepagents package (which transitively imports
  * langchain / langgraph and bloats the FE chunk graph).
+ *
+ * `task-end` carries optional `failureKind` + `failureReason` fields
+ * the API runner populates when a subagent's final output looks like
+ * an error / refusal / empty answer. The activity timeline renders
+ * these as a red row so the user sees the failure inline instead of
+ * having to read the supervisor's recovery text.
  */
 export type DeepAgentChunk =
   | { type: "text-delta"; delta: string; source: "supervisor" | "subagent"; subagentName?: string; subagentCallId?: string }
   | { type: "tool-start"; callId: string; name: string; args: unknown; subagentCallId?: string }
   | { type: "tool-end"; callId: string; name: string; output: string; subagentCallId?: string }
   | { type: "task-start"; callId: string; subagentName: string; description: string }
-  | { type: "task-end"; callId: string; subagentName: string; output: string; durationMs: number }
+  | {
+      type: "task-end";
+      callId: string;
+      subagentName: string;
+      output: string;
+      durationMs: number;
+      failureKind?: DeepAgentTaskFailureKind | null;
+      failureReason?: string | null;
+    }
   | { type: "files-update"; files: Record<string, string | null>; subagentCallId?: string }
   | { type: "llm-usage"; runId: string; source: "supervisor" | "subagent"; subagentName?: string; subagentCallId?: string; node: string; inputTokens: number | null; outputTokens: number | null; totalTokens: number | null }
   | { type: "done" }
