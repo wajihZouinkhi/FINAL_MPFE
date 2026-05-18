@@ -59,16 +59,16 @@ The API ships as a self-contained container. Railway will detect the Dockerfile 
    REDIS_URL=rediss://…
 
    SUPERVISOR_LLM_API_KEY=…
-   SUPERVISOR_LLM_BASE_URL=https://api.x.ai/v1
-   SUPERVISOR_LLM_MODEL=grok-4-fast-reasoning
+   SUPERVISOR_LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+   SUPERVISOR_LLM_MODEL=mistralai/mistral-small-4-119b-2603
 
    WRITER_LLM_API_KEY=…
    WRITER_LLM_BASE_URL=https://integrate.api.nvidia.com/v1
-   WRITER_LLM_MODEL=meta/llama-3.3-70b-instruct
+   WRITER_LLM_MODEL=mistralai/mistral-small-4-119b-2603
 
    UTILITY_LLM_API_KEY=…
-   UTILITY_LLM_BASE_URL=https://api.x.ai/v1
-   UTILITY_LLM_MODEL=grok-4-fast-non-reasoning
+   UTILITY_LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+   UTILITY_LLM_MODEL=mistralai/mistral-small-4-119b-2603
 
    SERPR_API_KEY=…
    ```

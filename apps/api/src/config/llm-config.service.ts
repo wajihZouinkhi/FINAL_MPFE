@@ -190,6 +190,7 @@ export class LlmConfigService {
       apiKey: t.apiKey,
       model: t.model,
       temperature: overrides.temperature ?? 0.3,
+      modelKwargs: { reasoning_effort: "high" },
       configuration: {
         baseURL: t.baseUrl,
         fetch: makeStrippingFetch(),

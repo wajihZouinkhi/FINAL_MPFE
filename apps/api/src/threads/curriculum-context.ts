@@ -20,12 +20,13 @@
  *
  *   2. **Token budget.** The synthesised prompt + the supervisor
  *      system prompt + the user message must stay well under the
- *      LLM's context window. NVIDIA `moonshotai/kimi-k2.6` has a
- *      256k window; we cap the curriculum context at ~6k tokens
- *      (~24000 chars at the standard 4-chars/token approximation)
- *      to leave headroom for the supervisor prompt, the writer's
- *      task description, retrieval results mid-pass, and the
- *      assistant turn itself.
+ *      LLM's context window. NVIDIA `mistralai/mistral-small-4-119b-2603`
+ *      (the default supervisor model since the kimi-k2.6 → mistral
+ *      swap) has a 128k window; we cap the curriculum context at
+ *      ~6k tokens (~24000 chars at the standard 4-chars/token
+ *      approximation) to leave headroom for the supervisor prompt,
+ *      the writer's task description, retrieval results mid-pass,
+ *      and the assistant turn itself.
  *
  *   3. **Trim policy.** When over budget, drop verbose fields in
  *      this order, oldest-first, before dropping entire entries:
