@@ -596,6 +596,7 @@ export async function createDeepAgentRunner(
     apiKey: options.apiKey,
     streaming: true,
     temperature: options.temperature ?? 0.2,
+    modelKwargs: { reasoning_effort: "high" },
     ...(options.baseUrl
       ? { configuration: { baseURL: options.baseUrl } }
       : {}),
