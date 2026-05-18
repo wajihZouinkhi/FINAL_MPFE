@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
 } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
 import type { Response } from "express";
 import { DeepAgentService } from "../agents-v2/deepagent.service";
 import { EntitiesService } from "./entities.service";
@@ -91,11 +92,53 @@ export class ScopedGenerateService {
     );
 
     // The deep-agent runner is keyed by thread_id for checkpointing.
-    // We use the entity_id itself as the synthetic thread_id when no
-    // real thread is bound; this gives every entity a stable thread
-    // for the runner's checkpoint cache without colliding with
-    // legacy chat threads.
-    const threadId = ctx.threadId ?? entityId;
+    // We deliberately allocate a FRESH random thread_id for every
+    // /generate call instead of reusing the syllabus's bound
+    // thread_id or the entity_id itself.
+    //
+    // Why a fresh per-call thread (vs. ctx.threadId ?? entityId):
+    //
+    //   1. Cancellation cascade. The DeepAgentRunner's stream() is
+    //      keyed by threadId; two concurrent calls with the same
+    //      threadId would clobber each other through the
+    //      LangGraph checkpointer (one wins, the other is treated
+    //      as a resumed-and-cancelled run). When the user clicked
+    //      "Gen" on a unity while the syllabus-scoped run was
+    //      still in flight (both keyed by syllabus.thread_id under
+    //      the old logic), the syllabus run aborted mid-stream and
+    //      the worksheet writes that depend on its supervisor
+    //      decisions never happened.
+    //
+    //   2. No need for cross-call memory. The Partie A curriculum-
+    //      context block is re-injected on every /generate call
+    //      (see `buildCurriculumContext` above), so the supervisor
+    //      always re-enters with full knowledge of what already
+    //      exists in the syllabus tree. We don't need the thread's
+    //      message history to carry over from the previous Gen
+    //      click. Each /generate is a self-contained "fill in this
+    //      one scope" task.
+    //
+    //   3. Legacy chat threads. `ctx.threadId` is bound to the
+    //      legacy `/api/chat/:threadId` flow and may already have
+    //      a user turn at its tail; appending a synthesised
+    //      supervisor prompt into that thread would interleave
+    //      with the user's real chat history.
+    //
+    // The trade-off is that the deep-agent checkpointer accumulates
+    // one row per /generate call instead of reusing rows per
+    // entity. That's acceptable — the checkpoint tables in the
+    // `deep_agent` schema are small (a few KB per run) and the
+    // user benefits from being able to "see what happened" on the
+    // specific run that just finished without it being clobbered
+    // by the next click.
+    const threadId = randomUUID();
+    this.logger.log(
+      `scoped generate starting ` +
+        `scope=${scope} ` +
+        `entityId=${entityId} ` +
+        `threadId=${threadId} ` +
+        `syllabusId=${ctx.syllabusId ?? "null"}`,
+    );
 
     // Set SSE headers + flush before the runner starts streaming.
     res.setHeader("Content-Type", "text/event-stream");

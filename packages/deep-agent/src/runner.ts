@@ -115,10 +115,39 @@ export interface DeepAgentTaskStartChunk {
 }
 
 /**
+ * Coarse failure category for a `task-end` chunk. `null` (or
+ * unset) means the run looked like a normal success — the supervisor
+ * got a populated final string back and there's no error signal in
+ * the output. The heuristics are best-effort: we only have the
+ * subagent's synthesised final answer to inspect (deepagents
+ * collapses the subagent's last AIMessage into a single string
+ * before returning from the `task` tool), so we tag failures we can
+ * recognise from the text and leave everything else as success.
+ *
+ * Wire shape is a free-form string union so the FE doesn't have to
+ * special-case unknown future kinds — but the runner only ever emits
+ * one of the four documented values.
+ */
+export type DeepAgentTaskFailureKind =
+  | "timeout"
+  | "tool-call-error"
+  | "invalid-output"
+  | "unknown";
+
+/**
  * The subagent's run finished and its `task` tool call returned to
  * the supervisor. `output` is the synthesised final string the tool
  * returns to the supervisor (last assistant message of the subagent,
  * mirroring the deepagents source).
+ *
+ * `failureKind` + `failureReason` are populated when the runner
+ * detects the subagent did not produce a useful answer — either the
+ * deepagents library returned an error sentinel from the `task` tool
+ * body (rare: only when the subagent threw mid-stream and was caught
+ * upstream of us), or the final output looks like an error / empty
+ * string / "I can't" refusal. The FE renders these as a red row in
+ * the activity timeline so the user sees the failure without having
+ * to read the supervisor's recovery text.
  */
 export interface DeepAgentTaskEndChunk {
   type: "task-end";
@@ -126,6 +155,18 @@ export interface DeepAgentTaskEndChunk {
   subagentName: string;
   output: string;
   durationMs: number;
+  /**
+   * Coarse failure category, or `null` for a successful run. See
+   * `DeepAgentTaskFailureKind` for the value semantics.
+   */
+  failureKind?: DeepAgentTaskFailureKind | null;
+  /**
+   * Short human-readable reason matching `failureKind`. Always
+   * truncated to ≤ 240 chars so the FE can render it inline without
+   * blowing out the timeline row. `null` (or unset) for successful
+   * runs.
+   */
+  failureReason?: string | null;
 }
 
 /**
@@ -1095,12 +1136,35 @@ export async function createDeepAgentRunner(
                 : -1;
               if (taskIdx !== -1) {
                 const popped = taskCallStack.splice(taskIdx, 1)[0];
+                const durationMs = Date.now() - popped.startedAt;
+                const { failureKind, failureReason } =
+                  classifyTaskEndOutput(output);
+                if (failureKind) {
+                  // Structured stderr line so the Railway log search
+                  // matches `[deep-agent] subagent failed` exactly,
+                  // and the user-supplied threadId / scope is on the
+                  // same line for grep-by-thread. Keep the output
+                  // sample short to avoid blowing out the log row.
+                  const sample = output.replace(/\s+/g, " ").slice(0, 240);
+                  console.warn(
+                    `[deep-agent] subagent failed ` +
+                      `subagent=${popped.subagentName} ` +
+                      `callId=${popped.callId} ` +
+                      `threadId=${threadId} ` +
+                      `durationMs=${durationMs} ` +
+                      `failureKind=${failureKind} ` +
+                      `failureReason=${JSON.stringify(failureReason)} ` +
+                      `outputSample=${JSON.stringify(sample)}`,
+                  );
+                }
                 yield {
                   type: "task-end",
                   callId: popped.callId,
                   subagentName: popped.subagentName,
                   output,
-                  durationMs: Date.now() - popped.startedAt,
+                  durationMs,
+                  failureKind,
+                  failureReason,
                 };
                 continue;
               }
@@ -1121,6 +1185,21 @@ export async function createDeepAgentRunner(
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Deep agent stream failed";
+      // Log the full stack to stderr (single line for Railway log
+      // search) so on-call can grep by threadId when a /generate
+      // call dies mid-stream. `err.stack` is the canonical multi-
+      // line trace; we JSON-encode it so it stays on one line and
+      // survives Railway's log truncation.
+      const stack =
+        err instanceof Error && typeof err.stack === "string"
+          ? err.stack
+          : message;
+      console.error(
+        `[deep-agent] stream threw ` +
+          `threadId=${threadId} ` +
+          `message=${JSON.stringify(message)} ` +
+          `stack=${JSON.stringify(stack)}`,
+      );
       yield { type: "error", message };
     }
 
@@ -1473,6 +1552,88 @@ function stringifyToolOutput(content: unknown): string {
   }
   if (content == null) return "";
   return JSON.stringify(content);
+}
+
+/**
+ * Best-effort classification of a subagent's final `task-end` output
+ * into a `(failureKind, failureReason)` pair. Returns `(null, null)`
+ * when the output looks like a normal success.
+ *
+ * Heuristics, in order:
+ *
+ *  1. **Empty / whitespace-only output** → `invalid-output`. The
+ *     deepagents `task` tool always returns *something* on a healthy
+ *     run (the subagent's last AIMessage), so an empty string means
+ *     either the subagent's last message had no text content (it
+ *     ended on a pure tool call) or the runner aborted before the
+ *     subagent produced its final answer.
+ *
+ *  2. **Output starts with `Error:` / `Traceback` / `Exception` / a
+ *     known timeout marker** → `tool-call-error` (or `timeout` for
+ *     the timeout marker specifically). deepagents bubbles up tool
+ *     errors as the subagent's final string in some failure paths;
+ *     this catches the common shapes.
+ *
+ *  3. **First ~200 chars contain "i can't" / "i cannot" / "unable to
+ *     complete"** → `invalid-output`. A refusal from the subagent's
+ *     LLM is not technically a crash, but it IS a failure to do the
+ *     job the supervisor delegated, and the user benefits from
+ *     seeing it called out separately in the timeline.
+ *
+ *  4. Anything else → `(null, null)` (success).
+ *
+ * The `failureReason` is always the first sentence (or first 240
+ * chars, whichever is shorter) of the output, so the FE can render
+ * it inline without re-wrapping.
+ */
+function classifyTaskEndOutput(
+  output: string,
+): {
+  failureKind: DeepAgentTaskFailureKind | null;
+  failureReason: string | null;
+} {
+  const trimmed = (output ?? "").trim();
+  if (trimmed.length === 0) {
+    return {
+      failureKind: "invalid-output",
+      failureReason: "subagent returned an empty final message",
+    };
+  }
+  // Truncate to ~240 chars on the first newline / sentence end for a
+  // tight inline reason. Always preserves the first chunk verbatim.
+  const firstLine = trimmed.split(/\r?\n/, 1)[0] ?? "";
+  const reasonRaw =
+    firstLine.length > 0 && firstLine.length <= 240
+      ? firstLine
+      : trimmed.slice(0, 240);
+  const reason = reasonRaw.length > 240 ? `${reasonRaw.slice(0, 237)}…` : reasonRaw;
+  const head = trimmed.slice(0, 200).toLowerCase();
+  if (
+    head.includes("timeout") ||
+    head.includes("timed out") ||
+    head.includes("aborterror")
+  ) {
+    return { failureKind: "timeout", failureReason: reason };
+  }
+  if (
+    head.startsWith("error:") ||
+    head.startsWith("traceback") ||
+    head.startsWith("exception") ||
+    head.includes("\nerror:") ||
+    head.includes("tool call failed") ||
+    head.includes("tool error")
+  ) {
+    return { failureKind: "tool-call-error", failureReason: reason };
+  }
+  if (
+    head.includes("i can't") ||
+    head.includes("i cannot") ||
+    head.includes("i'm unable") ||
+    head.includes("unable to complete")
+  ) {
+    return { failureKind: "invalid-output", failureReason: reason };
+  }
+  return { failureKind: null, failureReason: null };
 }
 
 

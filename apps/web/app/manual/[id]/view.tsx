@@ -41,6 +41,7 @@ import remarkGfm from "remark-gfm";
 import {
   streamScopedGenerate,
   type DeepAgentChunk,
+  type DeepAgentTaskFailureKind,
 } from "../../../lib/scoped-generate-sse";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -72,6 +73,81 @@ interface Tree {
   unities: Unity[];
 }
 
+/**
+ * One row in the activity timeline (replacement for the old free-form
+ * events list). Each row corresponds to a single discrete event from
+ * the deep-agent stream and carries enough structured data for the
+ * timeline panel to render it richly — name, duration, subagent,
+ * failure reason — without re-parsing a generic `message` string.
+ *
+ * Status semantics:
+ *
+ *   - `running`  — a `tool-start` / `task-start` was emitted and the
+ *                  matching `*-end` hasn't been seen yet. Renders the
+ *                  spinner.
+ *   - `ok`       — the matching `*-end` arrived with no failure
+ *                  signal. Renders an emerald checkmark.
+ *   - `failed`   — `task-end` carried `failureKind`, or an `error`
+ *                  chunk was emitted, or an in-flight tool/task was
+ *                  cancelled by the user. Renders red.
+ *   - `info`     — bookkeeping rows (cancellation, done, files-update)
+ *                  that don't have a start/end pairing.
+ */
+type TimelineRow =
+  | {
+      key: string;
+      ts: number;
+      kind: "tool";
+      status: "running" | "ok" | "failed";
+      name: string;
+      callId: string;
+      subagentName: string | null;
+      durationMs: number | null;
+      output: string | null;
+    }
+  | {
+      key: string;
+      ts: number;
+      kind: "task";
+      status: "running" | "ok" | "failed";
+      subagentName: string;
+      callId: string;
+      description: string;
+      durationMs: number | null;
+      output: string | null;
+      failureKind: DeepAgentTaskFailureKind | null;
+      failureReason: string | null;
+    }
+  | {
+      key: string;
+      ts: number;
+      kind: "file";
+      status: "info";
+      paths: string[];
+      subagentCallId: string | null;
+    }
+  | {
+      key: string;
+      ts: number;
+      kind: "info" | "error";
+      status: "info" | "failed";
+      message: string;
+    };
+
+/**
+ * Rolling counters surfaced as badges on the timeline panel header so
+ * the user gets a one-glance "is the supervisor doing anything"
+ * signal even before any text starts streaming.
+ */
+interface TimelineCounts {
+  toolsRunning: number;
+  toolsDone: number;
+  tasksRunning: number;
+  tasksDone: number;
+  filesWritten: number;
+  failures: number;
+}
+
 type ActiveStream =
   | null
   | {
@@ -79,13 +155,20 @@ type ActiveStream =
       entityId: string;
       label: string;
       text: string;
-      events: Array<{
-        kind: "tool" | "task" | "file" | "info" | "error";
-        message: string;
-        ts: number;
-      }>;
+      rows: TimelineRow[];
+      counts: TimelineCounts;
+      doneOrFailed: boolean;
       ctrl: AbortController;
     };
+
+const emptyCounts = (): TimelineCounts => ({
+  toolsRunning: 0,
+  toolsDone: 0,
+  tasksRunning: 0,
+  tasksDone: 0,
+  filesWritten: 0,
+  failures: 0,
+});
 
 interface Props {
   syllabusId: string;
@@ -209,7 +292,9 @@ export default function ManualWorkspaceView({ syllabusId }: Props) {
         entityId: opts.entityId,
         label: opts.label,
         text: "",
-        events: [],
+        rows: [],
+        counts: emptyCounts(),
+        doneOrFailed: false,
         ctrl,
       });
 
@@ -239,17 +324,49 @@ export default function ManualWorkspaceView({ syllabusId }: Props) {
 
   const cancelStream = () => {
     stream?.ctrl.abort();
-    setStream((cur) =>
-      cur
-        ? {
-            ...cur,
-            events: [
-              ...cur.events,
-              { kind: "info", message: "Cancelled by user", ts: Date.now() },
-            ],
-          }
-        : cur,
-    );
+    setStream((cur) => {
+      if (!cur) return cur;
+      const now = Date.now();
+      // Flush any still-running tool / task rows to a `failed` state
+      // with a synthetic cancellation reason so the timeline reflects
+      // that the user stopped the run mid-flight rather than the
+      // stream silently finishing.
+      const counts = { ...cur.counts };
+      const flushed: TimelineRow[] = cur.rows.map((r) => {
+        if (r.kind === "tool" && r.status === "running") {
+          counts.toolsRunning = Math.max(0, counts.toolsRunning - 1);
+          counts.failures += 1;
+          return { ...r, status: "failed" as const, durationMs: now - r.ts };
+        }
+        if (r.kind === "task" && r.status === "running") {
+          counts.tasksRunning = Math.max(0, counts.tasksRunning - 1);
+          counts.failures += 1;
+          return {
+            ...r,
+            status: "failed" as const,
+            durationMs: now - r.ts,
+            failureKind: "unknown" as DeepAgentTaskFailureKind,
+            failureReason: "cancelled by user",
+          };
+        }
+        return r;
+      });
+      return {
+        ...cur,
+        rows: [
+          ...flushed,
+          {
+            key: `info:${now}:cancel`,
+            ts: now,
+            kind: "info",
+            status: "info",
+            message: "Cancelled by user",
+          } satisfies TimelineRow,
+        ],
+        counts,
+        doneOrFailed: true,
+      };
+    });
   };
 
   // ─── viewing state ──────────────────────────────────────────────────
@@ -606,6 +723,36 @@ export default function ManualWorkspaceView({ syllabusId }: Props) {
 
 // ─── helpers + sub-components ─────────────────────────────────────────
 
+/**
+ * Reducer over the deep-agent SSE stream into the structured timeline
+ * model in `ActiveStream`.
+ *
+ * Key invariants (read this before touching the function):
+ *
+ *   - A `tool-start` / `task-start` always inserts a NEW row at the
+ *     tail in `running` state. The matching `*-end` MUTATES that row
+ *     in place (status → ok/failed, durationMs filled, output filled)
+ *     instead of appending a second row. This keeps the timeline
+ *     one-row-per-tool-call so the user reads top-to-bottom without
+ *     duplicates.
+ *
+ *   - Match by `callId`. Both start and end chunks carry the same
+ *     `callId` from the runner (`tool_call_id` from the AIMessage),
+ *     so matching is exact, not heuristic. If we receive an end
+ *     without a matching start (e.g. SSE reconnect mid-stream), we
+ *     still append a synthetic completed row so nothing is silently
+ *     dropped.
+ *
+ *   - The supervisor `text` accumulates into `cur.text` exactly as
+ *     before; the timeline does NOT replace the supervisor stream
+ *     panel, it sits ALONGSIDE it. F1 deliberately keeps both so
+ *     the user can still scrub the supervisor's reasoning prose
+ *     while seeing the structured activity below.
+ *
+ *   - `doneOrFailed` flips to `true` on a terminal `done` or `error`
+ *     chunk. The header swaps the spinner for a check or an error
+ *     glyph and hides the Cancel button.
+ */
 function applyChunk(
   cur: ActiveStream,
   entityId: string,
@@ -613,87 +760,177 @@ function applyChunk(
   chunk: DeepAgentChunk,
 ): ActiveStream {
   if (!cur || cur.entityId !== entityId || cur.scope !== scope) return cur;
+  const now = Date.now();
+  const counts = { ...cur.counts };
   switch (chunk.type) {
     case "text-delta":
       return { ...cur, text: cur.text + chunk.delta };
-    case "tool-start":
-      return {
-        ...cur,
-        events: [
-          ...cur.events,
-          {
-            kind: "tool",
-            message: `tool-start: ${chunk.name}`,
-            ts: Date.now(),
-          },
-        ],
+    case "tool-start": {
+      counts.toolsRunning += 1;
+      const row: TimelineRow = {
+        key: `tool:${chunk.callId}`,
+        ts: now,
+        kind: "tool",
+        status: "running",
+        name: chunk.name,
+        callId: chunk.callId,
+        subagentName: null,
+        durationMs: null,
+        output: null,
       };
-    case "tool-end":
-      return {
-        ...cur,
-        events: [
-          ...cur.events,
-          {
-            kind: "tool",
-            message: `tool-end: ${chunk.name}`,
-            ts: Date.now(),
-          },
-        ],
+      return { ...cur, rows: [...cur.rows, row], counts };
+    }
+    case "tool-end": {
+      // Mutate the matching running row in place; if we didn't see a
+      // start (unlikely but possible on reconnect), append a synthetic
+      // completed row so the event isn't silently dropped.
+      const idx = cur.rows.findIndex(
+        (r) => r.kind === "tool" && r.callId === chunk.callId,
+      );
+      if (idx === -1) {
+        counts.toolsDone += 1;
+        const row: TimelineRow = {
+          key: `tool:${chunk.callId}`,
+          ts: now,
+          kind: "tool",
+          status: "ok",
+          name: chunk.name,
+          callId: chunk.callId,
+          subagentName: null,
+          durationMs: null,
+          output: chunk.output ?? null,
+        };
+        return { ...cur, rows: [...cur.rows, row], counts };
+      }
+      counts.toolsRunning = Math.max(0, counts.toolsRunning - 1);
+      counts.toolsDone += 1;
+      const existing = cur.rows[idx] as Extract<TimelineRow, { kind: "tool" }>;
+      const updated: TimelineRow = {
+        ...existing,
+        status: "ok",
+        durationMs: now - existing.ts,
+        output: chunk.output ?? null,
       };
-    case "task-start":
-      return {
-        ...cur,
-        events: [
-          ...cur.events,
-          {
-            kind: "task",
-            message: `dispatch ${chunk.subagentName}: ${chunk.description.slice(0, 80)}…`,
-            ts: Date.now(),
-          },
-        ],
+      const rows = cur.rows.slice();
+      rows[idx] = updated;
+      return { ...cur, rows, counts };
+    }
+    case "task-start": {
+      counts.tasksRunning += 1;
+      const row: TimelineRow = {
+        key: `task:${chunk.callId}`,
+        ts: now,
+        kind: "task",
+        status: "running",
+        subagentName: chunk.subagentName,
+        callId: chunk.callId,
+        description: chunk.description,
+        durationMs: null,
+        output: null,
+        failureKind: null,
+        failureReason: null,
       };
-    case "task-end":
-      return {
-        ...cur,
-        events: [
-          ...cur.events,
-          {
-            kind: "task",
-            message: `${chunk.subagentName} done (${(chunk.durationMs / 1000).toFixed(1)}s)`,
-            ts: Date.now(),
-          },
-        ],
+      return { ...cur, rows: [...cur.rows, row], counts };
+    }
+    case "task-end": {
+      const idx = cur.rows.findIndex(
+        (r) => r.kind === "task" && r.callId === chunk.callId,
+      );
+      const failed = !!chunk.failureKind;
+      if (failed) counts.failures += 1;
+      if (idx === -1) {
+        counts.tasksDone += 1;
+        const row: TimelineRow = {
+          key: `task:${chunk.callId}`,
+          ts: now,
+          kind: "task",
+          status: failed ? "failed" : "ok",
+          subagentName: chunk.subagentName,
+          callId: chunk.callId,
+          description: "",
+          durationMs: chunk.durationMs,
+          output: chunk.output ?? null,
+          failureKind: chunk.failureKind ?? null,
+          failureReason: chunk.failureReason ?? null,
+        };
+        return { ...cur, rows: [...cur.rows, row], counts };
+      }
+      counts.tasksRunning = Math.max(0, counts.tasksRunning - 1);
+      counts.tasksDone += 1;
+      const existing = cur.rows[idx] as Extract<TimelineRow, { kind: "task" }>;
+      const updated: TimelineRow = {
+        ...existing,
+        status: failed ? "failed" : "ok",
+        durationMs: chunk.durationMs,
+        output: chunk.output ?? null,
+        failureKind: chunk.failureKind ?? null,
+        failureReason: chunk.failureReason ?? null,
       };
+      const rows = cur.rows.slice();
+      rows[idx] = updated;
+      return { ...cur, rows, counts };
+    }
     case "files-update": {
-      const paths = Object.keys(chunk.files).join(", ");
+      const paths = Object.keys(chunk.files);
+      counts.filesWritten += paths.length;
+      const row: TimelineRow = {
+        key: `file:${now}:${paths.join(",")}`,
+        ts: now,
+        kind: "file",
+        status: "info",
+        paths,
+        subagentCallId: chunk.subagentCallId ?? null,
+      };
+      return { ...cur, rows: [...cur.rows, row], counts };
+    }
+    case "error": {
+      counts.failures += 1;
+      const row: TimelineRow = {
+        key: `error:${now}`,
+        ts: now,
+        kind: "error",
+        status: "failed",
+        message: chunk.message,
+      };
       return {
         ...cur,
-        events: [
-          ...cur.events,
-          {
-            kind: "file",
-            message: `wrote ${paths}`,
-            ts: Date.now(),
-          },
-        ],
+        rows: [...cur.rows, row],
+        counts,
+        doneOrFailed: true,
       };
     }
-    case "error":
+    case "done": {
+      const row: TimelineRow = {
+        key: `done:${now}`,
+        ts: now,
+        kind: "info",
+        status: "info",
+        message: "stream complete",
+      };
+      // Flush any still-running tool/task rows that never received
+      // a matching *-end (e.g. the supervisor finished its outer
+      // loop without closing them). Mark them as ok so the timeline
+      // doesn't keep spinning forever after [DONE].
+      const flushed = cur.rows.map((r) => {
+        if (r.kind === "tool" && r.status === "running") {
+          counts.toolsRunning = Math.max(0, counts.toolsRunning - 1);
+          counts.toolsDone += 1;
+          return { ...r, status: "ok" as const, durationMs: now - r.ts };
+        }
+        if (r.kind === "task" && r.status === "running") {
+          counts.tasksRunning = Math.max(0, counts.tasksRunning - 1);
+          counts.tasksDone += 1;
+          return { ...r, status: "ok" as const, durationMs: now - r.ts };
+        }
+        return r;
+      });
       return {
         ...cur,
-        events: [
-          ...cur.events,
-          { kind: "error", message: chunk.message, ts: Date.now() },
-        ],
+        rows: [...flushed, row],
+        counts,
+        doneOrFailed: true,
       };
-    case "done":
-      return {
-        ...cur,
-        events: [
-          ...cur.events,
-          { kind: "info", message: "done", ts: Date.now() },
-        ],
-      };
+    }
     default:
       return cur;
   }
@@ -748,6 +985,29 @@ function InlineAddForm({
   );
 }
 
+/**
+ * Right-pane view for an in-flight (or just-finished) /generate call.
+ *
+ * Layout (F1):
+ *
+ *   ┌─────────────────────────────────────────────────────────┐
+ *   │ <header>  label  spinner  [Cancel]  counts             │
+ *   ├─────────────────────────────────────────────────────────┤
+ *   │ Activity timeline                                       │
+ *   │   <row…>  task pedagogy_planner  · running · 4.1 s     │
+ *   │   <row…>  tool find_related_activities · ok · 0.7 s    │
+ *   │   <row…>  file /pedagogy_plan.md                       │
+ *   │   …                                                     │
+ *   ├─────────────────────────────────────────────────────────┤
+ *   │ Supervisor stream                                       │
+ *   │   <prose tokens…>                                       │
+ *   └─────────────────────────────────────────────────────────┘
+ *
+ * The timeline sits ABOVE the supervisor stream so the user sees
+ * "something is happening" the moment the first tool fires, instead
+ * of staring at the supervisor's blank prose pane for 20-30s while
+ * the writer subagent burns through MCP calls.
+ */
 function StreamPanel({
   stream,
   onCancel,
@@ -756,21 +1016,31 @@ function StreamPanel({
   onCancel: () => void;
 }) {
   const textRef = useRef<HTMLDivElement | null>(null);
+  const rowsRef = useRef<HTMLDivElement | null>(null);
   // Auto-scroll the streaming text container as deltas arrive.
   useEffect(() => {
     if (textRef.current) {
       textRef.current.scrollTop = textRef.current.scrollHeight;
     }
   }, [stream.text]);
-  const done = stream.events.some(
-    (e) => e.message === "done" || e.kind === "error",
-  );
+  // Auto-scroll the timeline as new rows append.
+  useEffect(() => {
+    if (rowsRef.current) {
+      rowsRef.current.scrollTop = rowsRef.current.scrollHeight;
+    }
+  }, [stream.rows.length]);
+  const done = stream.doneOrFailed;
+  const hasFailure = stream.counts.failures > 0;
   return (
     <div className="flex h-full flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-[13px] font-semibold">
           {done ? (
-            <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+            hasFailure ? (
+              <X className="h-3.5 w-3.5 text-[var(--destructive)]" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+            )
           ) : (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--primary)]" />
           )}
@@ -787,57 +1057,250 @@ function StreamPanel({
         )}
       </div>
 
+      <TimelineCountsBar counts={stream.counts} done={done} />
+
       <section className="rounded-md border border-[var(--border)] bg-[var(--card)]/50">
         <header className="border-b border-[var(--border)] px-3 py-1.5 text-[10.5px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
-          Supervisor stream
+          Activity timeline ({stream.rows.length})
         </header>
         <div
-          ref={textRef}
-          className="max-h-[40dvh] overflow-y-auto whitespace-pre-wrap break-words px-3 py-2 text-[12px] leading-relaxed"
+          ref={rowsRef}
+          className="max-h-[40dvh] overflow-y-auto divide-y divide-[var(--border)]/60"
         >
-          {stream.text || (
-            <span className="text-[var(--muted-foreground)]">
-              waiting for first token…
-            </span>
+          {stream.rows.length === 0 ? (
+            <p className="px-3 py-3 text-[11px] text-[var(--muted-foreground)]">
+              Waiting for the supervisor to start a tool or dispatch a
+              subagent…
+            </p>
+          ) : (
+            stream.rows.map((row) => (
+              <TimelineRowView key={row.key} row={row} />
+            ))
           )}
         </div>
       </section>
 
       <section className="rounded-md border border-[var(--border)] bg-[var(--card)]/50">
         <header className="border-b border-[var(--border)] px-3 py-1.5 text-[10.5px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
-          Events ({stream.events.length})
+          Supervisor stream
         </header>
-        <ul className="max-h-[35dvh] overflow-y-auto divide-y divide-[var(--border)]/60 text-[11px]">
-          {stream.events.map((ev, i) => (
-            <li
-              key={i}
-              className={`flex items-center gap-2 px-3 py-1 ${
-                ev.kind === "error"
-                  ? "text-[var(--destructive)]"
-                  : ev.kind === "task"
-                    ? "text-violet-400"
-                    : ev.kind === "tool"
-                      ? "text-emerald-400/90"
-                      : ev.kind === "file"
-                        ? "text-sky-400"
-                        : "text-[var(--muted-foreground)]"
-              }`}
-            >
-              <span className="font-mono text-[9.5px] opacity-70">
-                {new Date(ev.ts).toLocaleTimeString()}
-              </span>
-              <span>{ev.message}</span>
-            </li>
-          ))}
-          {stream.events.length === 0 && (
-            <li className="px-3 py-2 text-[var(--muted-foreground)]">
-              No events yet.
-            </li>
+        <div
+          ref={textRef}
+          className="max-h-[35dvh] overflow-y-auto whitespace-pre-wrap break-words px-3 py-2 text-[12px] leading-relaxed"
+        >
+          {stream.text ? (
+            stream.text
+          ) : stream.counts.tasksRunning > 0 ||
+            stream.counts.toolsRunning > 0 ? (
+            <span className="text-[var(--muted-foreground)]">
+              Supervisor is running tools / subagents — see the activity
+              timeline above.
+            </span>
+          ) : (
+            <span className="text-[var(--muted-foreground)]">
+              Waiting for the first supervisor token…
+            </span>
           )}
-        </ul>
+        </div>
       </section>
     </div>
   );
+}
+
+/** Compact badge row under the header showing live tool / task counts. */
+function TimelineCountsBar({
+  counts,
+  done,
+}: {
+  counts: TimelineCounts;
+  done: boolean;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[10.5px]">
+      <CountBadge
+        label="tasks"
+        running={counts.tasksRunning}
+        done={counts.tasksDone}
+        tone="violet"
+      />
+      <CountBadge
+        label="tools"
+        running={counts.toolsRunning}
+        done={counts.toolsDone}
+        tone="emerald"
+      />
+      {counts.filesWritten > 0 && (
+        <span className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 font-medium text-sky-300">
+          <FileText className="h-2.5 w-2.5" />
+          {counts.filesWritten} file{counts.filesWritten === 1 ? "" : "s"}
+        </span>
+      )}
+      {counts.failures > 0 && (
+        <span className="inline-flex items-center gap-1 rounded-full border border-[var(--destructive)]/40 bg-[var(--destructive)]/10 px-2 py-0.5 font-medium text-[var(--destructive)]">
+          <X className="h-2.5 w-2.5" />
+          {counts.failures} failure{counts.failures === 1 ? "" : "s"}
+        </span>
+      )}
+      {done && counts.failures === 0 && (
+        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-300">
+          <Sparkles className="h-2.5 w-2.5" />
+          complete
+        </span>
+      )}
+    </div>
+  );
+}
+
+function CountBadge({
+  label,
+  running,
+  done,
+  tone,
+}: {
+  label: string;
+  running: number;
+  done: number;
+  tone: "violet" | "emerald";
+}) {
+  const total = running + done;
+  if (total === 0) return null;
+  const ring =
+    tone === "violet" ? "border-violet-500/30 text-violet-300" : "border-emerald-500/30 text-emerald-300";
+  const bg = tone === "violet" ? "bg-violet-500/10" : "bg-emerald-500/10";
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full border ${ring} ${bg} px-2 py-0.5 font-medium`}
+    >
+      {label}: {done}
+      {running > 0 ? <span>/{total} ({running} live)</span> : <span>/{total}</span>}
+    </span>
+  );
+}
+
+/** Render one row of the activity timeline. */
+function TimelineRowView({ row }: { row: TimelineRow }) {
+  const time = new Date(row.ts).toLocaleTimeString();
+  if (row.kind === "tool") {
+    return (
+      <div
+        className={`flex items-start gap-2 px-3 py-1.5 text-[11.5px] ${
+          row.status === "failed"
+            ? "bg-[var(--destructive)]/5 text-[var(--destructive)]"
+            : "text-[var(--foreground)]"
+        }`}
+      >
+        <RowGlyph status={row.status} kind="tool" />
+        <span className="mt-0.5 shrink-0 font-mono text-[9.5px] opacity-60">
+          {time}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate">
+            <span className="font-medium">tool</span>{" "}
+            <span className="font-mono text-emerald-300">{row.name}</span>
+            {row.durationMs != null && row.status !== "running" && (
+              <span className="ml-2 text-[10.5px] text-[var(--muted-foreground)]">
+                · {(row.durationMs / 1000).toFixed(1)}s
+              </span>
+            )}
+          </p>
+        </div>
+      </div>
+    );
+  }
+  if (row.kind === "task") {
+    const desc = row.description.slice(0, 200);
+    return (
+      <div
+        className={`flex items-start gap-2 px-3 py-1.5 text-[11.5px] ${
+          row.status === "failed"
+            ? "bg-[var(--destructive)]/5 text-[var(--destructive)]"
+            : "text-[var(--foreground)]"
+        }`}
+      >
+        <RowGlyph status={row.status} kind="task" />
+        <span className="mt-0.5 shrink-0 font-mono text-[9.5px] opacity-60">
+          {time}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate">
+            <span className="font-medium">subagent</span>{" "}
+            <span className="font-mono text-violet-300">{row.subagentName}</span>
+            {row.durationMs != null && row.status !== "running" && (
+              <span className="ml-2 text-[10.5px] text-[var(--muted-foreground)]">
+                · {(row.durationMs / 1000).toFixed(1)}s
+              </span>
+            )}
+          </p>
+          {desc && (
+            <p className="mt-0.5 truncate text-[10.5px] text-[var(--muted-foreground)]">
+              {desc}
+              {row.description.length > 200 ? "…" : ""}
+            </p>
+          )}
+          {row.failureKind && (
+            <p className="mt-0.5 truncate text-[10.5px] text-[var(--destructive)]">
+              {row.failureKind}: {row.failureReason ?? "(no detail)"}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+  if (row.kind === "file") {
+    return (
+      <div className="flex items-start gap-2 px-3 py-1.5 text-[11.5px] text-sky-300">
+        <FileText className="mt-0.5 h-3 w-3" />
+        <span className="mt-0.5 shrink-0 font-mono text-[9.5px] opacity-60">
+          {time}
+        </span>
+        <p className="min-w-0 flex-1 truncate font-mono">
+          wrote {row.paths.join(", ")}
+        </p>
+      </div>
+    );
+  }
+  // info / error
+  return (
+    <div
+      className={`flex items-start gap-2 px-3 py-1.5 text-[11.5px] ${
+        row.status === "failed"
+          ? "text-[var(--destructive)]"
+          : "text-[var(--muted-foreground)]"
+      }`}
+    >
+      <RowGlyph status={row.status} kind={row.kind} />
+      <span className="mt-0.5 shrink-0 font-mono text-[9.5px] opacity-60">
+        {time}
+      </span>
+      <p className="min-w-0 flex-1 truncate">{row.message}</p>
+    </div>
+  );
+}
+
+function RowGlyph({
+  status,
+  kind,
+}: {
+  status: TimelineRow["status"];
+  kind: TimelineRow["kind"];
+}) {
+  if (status === "running") {
+    return <Loader2 className="mt-0.5 h-3 w-3 animate-spin text-[var(--primary)]" />;
+  }
+  if (status === "failed") {
+    return <X className="mt-0.5 h-3 w-3 text-[var(--destructive)]" />;
+  }
+  if (status === "ok") {
+    return (
+      <Sparkles
+        className={`mt-0.5 h-3 w-3 ${
+          kind === "task" ? "text-violet-300" : "text-emerald-300"
+        }`}
+      />
+    );
+  }
+  // info bookkeeping row
+  return <ChevronRight className="mt-0.5 h-3 w-3 text-[var(--muted-foreground)]" />;
 }
 
 function EmptyViewer() {
