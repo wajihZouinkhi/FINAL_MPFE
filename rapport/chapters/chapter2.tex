@@ -1,0 +1,1674 @@
+%% ============================================================
+%%  CHAPITRE 2 — Conception de la couche d'agents
+%% ============================================================
+\chapter{Conception de la couche d'agents}
+\label{chap:conception}
+
+%% Listes d'outils \mcptool{...} très denses : ouvrir les marges
+%% intérieures pour autoriser les coupures à _ , ( etc.
+\sloppy
+
+L'introduction a posé le problème (redondance, absence d'ancrage factuel,
+absence de séparation des privilèges) et le chapitre~1 a établi les fondations
+théoriques : orchestration d'agents, Model Context Protocol et \gls{rag}
+agentique. Le présent chapitre traduit ces fondations en une conception logique
+complète, organisée en trois parties conformément à la structure retenue avec
+l'encadrant.
+
+La première partie traite de l'indexation des activités, pierre angulaire sans
+laquelle la non-redondance ne serait qu'un v{\oe}u. La deuxième présente le
+protocole \gls{mcp} tel qu'il s'applique au système, avec le catalogue d'outils
+qu'il expose et le principe du moindre privilège qui gouverne leur
+distribution. La troisième détaille le catalogue des agents retenus pour cette
+première version. La méthodologie de tests sera définie ultérieurement, une
+fois le développement suffisamment avancé pour disposer de résultats concrets
+à évaluer.
+
+%% ────────────────────────────────────────────────────────────
+\section{Indexation des activités pédagogiques}
+\label{sec:indexation}
+
+\subsection{Le problème de la redondance}
+
+L'approche mono-modèle décrite en introduction souffre d'un défaut structurel :
+chaque appel au \gls{llm} produit du contenu nouveau sans mémoire de ce qui a
+déjà été produit. Sur un parcours pédagogique enrichi au fil de plusieurs
+sessions, plusieurs activités finissent par traiter le même concept sous des
+angles à peine différents.
+
+Cette redondance n'est pas qu'un problème esthétique. Elle dilue l'ancrage des
+objectifs d'apprentissage, alourdit la charge cognitive de l'apprenant et
+complique le travail de l'enseignant qui doit trier manuellement les doublons.
+Pour qu'un agent génère du contenu utile, il doit d'abord savoir ce qui existe.
+
+La solution retenue est un mécanisme d'indexation qui transforme chaque
+activité existante en une représentation numérique comparable, et qui expose
+une opération de recherche par similarité aux agents générateurs.
+L'indexation constitue la pierre angulaire du système : sans elle, les parties
+suivantes (\gls{mcp}, agents) perdraient leur raison d'être.
+
+\subsection{Représentation vectorielle des activités}
+
+Le principe est le suivant. Chaque activité pédagogique (cours, question,
+exercice ou quiz) est décrite par un texte : son titre concaténé avec son
+contenu. Ce texte est transformé en un vecteur numérique de dimension fixe
+par un modèle de plongement (\emph{embedding model}). La dimension du vecteur
+est déterminée par le modèle retenu ; elle est sans incidence sur la logique
+de l'agent, qui ne manipule jamais les composantes individuelles. Deux textes
+sémantiquement proches, par exemple deux exercices portant sur la résolution
+d'équations du second degré, produisent des vecteurs proches dans cet espace,
+même si leur formulation diffère.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node/.style={rectangle, rounded corners=6pt, draw, thick,
+      minimum width=3.0cm, minimum height=1.0cm, align=center},
+    arrow/.style={->, thick, -{Stealth[length=3mm]}}
+]
+\node[node, fill=myblue!8] (txt) {Titre + contenu\\de l'activité};
+\node[node, right=1.5cm of txt, fill=myblue!8] (emb) {Modèle de\\plongement};
+\node[right=1.6cm of emb] (vec) {$\vec{v}\in\mathbb{R}^{d}$};
+\draw[arrow] (txt) -- (emb);
+\draw[arrow] (emb) -- (vec);
+\end{tikzpicture}
+\caption{Transformation d'une activité en vecteur numérique.}
+\label{fig:embedding}
+\end{figure}
+
+À partir de cette représentation, le système définit une \textbf{mesure de
+similarité} entre deux activités. Soit $\vec{u}$ le vecteur d'une activité
+existante et $\vec{v}$ celui d'un brouillon à créer ; la similarité
+$s(\vec{u}, \vec{v})$ est une fonction qui croît lorsque les deux vecteurs
+pointent dans la même direction de l'espace de plongement, et qui décroît
+lorsqu'ils en divergent. Le choix précis de cette mesure (cosinus, distance
+euclidienne ou autre) relève de la configuration du moteur d'indexation et
+non de la conception de l'agent.
+
+Un seuil $\tau$, fixé de manière empirique, permet de décider si deux
+activités sont sémantiquement trop proches : si la similarité dépasse $\tau$,
+l'agent doit signaler un risque de doublon avant toute écriture. Ce seuil est
+un paramètre du serveur, pas une connaissance que l'agent embarque dans son
+prompt.
+
+\subsection{Pipeline d'indexation}
+\label{sec:pipeline-index}
+
+Le pipeline d'indexation comporte deux flux complémentaires : la
+\textbf{création} d'un index à partir des activités existantes, et la
+\textbf{recherche} par similarité avant chaque nouvelle écriture.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node/.style={rectangle, rounded corners=5pt, draw, thick,
+      minimum width=3.0cm, minimum height=0.8cm, align=center,
+      font=\small},
+    db/.style={cylinder, draw, thick, shape border rotate=90,
+      aspect=0.3, minimum height=1.2cm, minimum width=1.8cm,
+      align=center, font=\small, fill=myblue!8},
+    arrow/.style={->, thick, -{Stealth[length=3mm]}}
+]
+%% Flux gauche : création de l'index
+\node[node, fill=myblue!8] (act) {Activité\\(titre + contenu)};
+\node[node, below=0.7cm of act, fill=myblue!8] (mod1) {Modèle de\\plongement};
+\node[db, below=0.7cm of mod1] (db1) {Index\\vectoriel};
+\draw[arrow] (act) -- (mod1);
+\draw[arrow] (mod1) -- (db1);
+\node[above=0.15cm of act, font=\bfseries\small] {Création};
+
+%% Flux droite : recherche
+\node[node, right=3.0cm of act, fill=myblue!8] (q) {Requête\\(sujet)};
+\node[node, below=0.7cm of q, fill=myblue!8] (mod2) {Modèle de\\plongement};
+\node[node, below=0.7cm of mod2, fill=myblue!8] (sim)
+  {Recherche par\\similarité ($k$-NN)};
+\node[node, below=0.7cm of sim, fill=myblue!8] (res)
+  {Top-$k$ activités\\les plus proches};
+\draw[arrow] (q) -- (mod2);
+\draw[arrow] (mod2) -- (sim);
+\draw[arrow] (sim) -- (res);
+\draw[arrow] (db1) -- node[above, font=\footnotesize]{interroge} (sim);
+\node[above=0.15cm of q, font=\bfseries\small] {Recherche};
+\end{tikzpicture}
+\caption{Pipeline d'indexation : création (gauche) et recherche (droite).}
+\label{fig:pipeline}
+\end{figure}
+
+À la création, chaque nouvelle activité passe par le modèle de plongement et
+le vecteur résultant est persisté dans un index vectoriel aux côtés de
+l'identifiant de l'activité. À la recherche, la requête de l'agent (typiquement
+le sujet d'une activité à créer) est elle-même plongée, puis comparée à toutes
+les entrées de l'index ; les $k$ plus proches sont retournées avec leur score
+de similarité.
+
+\subsection{Place de l'indexation dans l'architecture}
+
+L'indexation n'est pas un service autonome que les agents appellent
+directement. Elle est encapsulée dans le serveur \gls{mcp} sous la forme
+d'outils de recherche sémantique typés, accompagnés d'une mise à jour
+automatique de l'index à chaque création d'activité ou d'unité. L'agent ne
+voit donc l'indexation qu'à travers deux interfaces : une opération de
+recherche par similarité, en lecture, et une persistance enrichie de
+l'indexation, en écriture.
+
+Deux niveaux d'usage de cette indexation se distinguent dans la conception
+du système.
+
+Le premier niveau est l'usage \textbf{intra-syllabus}. Lorsqu'un agent doit
+produire une nouvelle activité dans un syllabus existant, son premier réflexe
+est la \textbf{lecture directe} des unités et activités sœurs : il interroge
+le serveur \gls{mcp} pour lister la structure du syllabus, puis lit le corps
+des activités voisines pour comprendre ce qui a déjà été enseigné. Cette
+lecture de proximité, déterministe et peu coûteuse, porte l'essentiel de la
+non-redondance dans le périmètre d'une seule unité. La recherche par
+similarité y joue le rôle de \textbf{signal complémentaire} : elle permet de
+détecter un quasi-doublon sémantique que la simple comparaison de titres
+n'aurait pas révélé, ou de signaler qu'une activité jugée nouvelle reformule
+en réalité un contenu existant.
+
+Le second niveau est l'usage \textbf{global}, où la lecture directe ne peut
+plus suffire. Trois situations le réclament. D'abord, la création d'un
+\textbf{nouveau syllabus} : pour éviter qu'un enseignant ne produise un
+doublon d'un syllabus existant dans la base, l'agent doit pouvoir interroger
+l'ensemble du catalogue par similarité, et pas seulement la liste textuelle
+des titres. Ensuite, l'\textbf{agent assistant élève} : lorsqu'un apprenant
+est bloqué sur un concept, l'agent doit pouvoir retrouver les activités
+sémantiquement proches à recommander, indépendamment de l'unité courante.
+Enfin, l'\textbf{agent tuteur} : pour proposer des variantes pédagogiques ou
+du matériel d'appui, l'agent doit pouvoir retrouver dans l'ensemble du
+catalogue les activités voisines d'une activité donnée.
+
+C'est sur ces trois usages que repose la valeur structurante de l'indexation.
+Elle reste accessible au niveau intra-syllabus comme garde-fou anti-doublon,
+mais son rôle décisif se déploie à l'échelle globale, dès que les agents
+doivent raisonner au-delà du périmètre d'un seul syllabus.
+
+%% ────────────────────────────────────────────────────────────
+\section{Le protocole MCP appliqué au système}
+\label{sec:mcp-systeme}
+
+\subsection{Rappel : qu'est-ce que le MCP}
+
+Le Model Context Protocol (\gls{mcp}), introduit en détail au chapitre~1, est
+un protocole ouvert qui standardise la façon dont un agent \gls{llm} découvre
+et appelle des outils fournis par un serveur externe~\cite{anthropic2024,mcpspec}.
+Son architecture client--serveur repose sur \gls{json}-\gls{rpc} : le client
+(intégré dans le runtime de l'agent) charge les descriptions d'outils, le
+modèle décide lesquels appeler, et le serveur exécute la logique
+correspondante puis renvoie un résultat structuré.
+
+Deux propriétés du protocole sont particulièrement pertinentes pour
+le présent système. La première est la \emph{découverte automatique} :
+un agent conforme peut interroger un serveur \gls{mcp} pour obtenir
+la liste de ses outils, y compris leurs schémas d'entrée et leur
+documentation, ce qui permet d'ajouter un nouvel outil au serveur
+sans modifier le code de l'agent — un simple redémarrage de la
+connexion suffit. La seconde est le \emph{découplage entre l'agent
+et son backend} : l'agent ne connaît ni la base de données ni le
+langage du serveur, mais seulement des noms d'outils et des schémas
+\gls{json}, ce qui permet de faire évoluer le backend (changer de
+\gls{bd}, ajouter un cache) sans impacter les agents qui le
+consomment.
+
+\subsection{Architecture MCP du système}
+\label{sec:mcp-archi}
+
+Le système expose trois serveurs \gls{mcp}, chacun couvrant un domaine
+fonctionnel distinct (figure~\ref{fig:mcp-servers}).
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    server/.style={rectangle, rounded corners=5pt, draw, thick,
+      minimum width=3.0cm, minimum height=1.0cm, align=center,
+      fill=myblue!10, font=\small\bfseries},
+    consumer/.style={rectangle, rounded corners=5pt, draw, thick,
+      minimum width=3.0cm, minimum height=0.9cm, align=center,
+      fill=gray!8, font=\small},
+    arrow/.style={->, thick, -{Stealth[length=3mm]}, gray!70}
+]
+\node[server] (s1) {Serveur MCP\\Curriculum};
+\node[server, right=0.8cm of s1] (s2) {Serveur MCP\\Données étudiants};
+\node[server, right=0.8cm of s2] (s3) {Serveur MCP\\Analytique};
+
+\node[consumer, below=1.5cm of s1] (c1)
+  {Agents\\générateurs};
+\node[consumer, below=1.5cm of s2] (c2)
+  {Tuteur /\\Assistant élève};
+\node[consumer, below=1.5cm of s3] (c3)
+  {Assistant\\administrateur};
+
+\draw[arrow] (s1) -- (c1);
+\draw[arrow] (s2) -- (c2);
+\draw[arrow] (s3) -- (c3);
+\end{tikzpicture}
+\caption{Trois serveurs MCP et les agents qui les consomment.}
+\label{fig:mcp-servers}
+\end{figure}
+
+Le \emph{Serveur Curriculum} expose la hiérarchie syllabus
+$\rightarrow$ unité $\rightarrow$ activité ; il constitue le serveur
+principal du système, en cela que tous les agents générateurs le
+consomment et que l'indexation vectorielle y est directement
+intégrée. Le \emph{Serveur Données étudiants} expose les
+soumissions, la progression et les retours ; il est consommé par le
+tuteur, en lecture comme en écriture de feedback, et par
+l'assistant élève, en lecture seule. Le \emph{Serveur Analytique}
+expose enfin les rapports agrégés d'inscription, de complétion et
+d'empreinte de contenu ; il est consommé par l'assistant
+administrateur.
+
+Chaque serveur supporte deux modes de transport conformes à la
+spécification \gls{mcp} 2025~\cite{mcpspec}. En mode \emph{stdio},
+le processus \gls{api} lance le serveur \gls{mcp} comme processus
+enfant : ce mode est adapté au développement local, sans aucune
+configuration réseau. En mode \emph{Streamable HTTP}, le serveur
+\gls{mcp} tourne comme service indépendant derrière un domaine
+privé ; chaque appel \gls{json}-\gls{rpc} prend la forme d'une
+requête \gls{http} POST sans état, ce qui rend possible le passage
+à l'échelle derrière un répartiteur de charge.
+
+\subsection{Catalogue d'outils MCP}
+\label{sec:mcp-catalogue}
+
+Le tableau~\ref{tab:mcp-curriculum} énumère l'ensemble des outils exposés par
+le serveur Curriculum. La distinction lecture / écriture est structurante :
+les outils de lecture retournent des métadonnées légères (identifiants,
+titres, ordre), tandis que les outils d'écriture effectuent exactement une
+mutation et retournent la ligne insérée.
+
+\begin{table}[H]
+\centering
+\caption{Outils MCP du serveur Curriculum.}
+\label{tab:mcp-curriculum}
+\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{4.8cm}
+    >{\raggedright\arraybackslash}p{1.6cm} X@{}}
+\toprule
+\textbf{Outil} & \textbf{Mode} & \textbf{Description}\\
+\midrule
+\mcptool{list_syllabuses}            & Lecture  & Liste des syllabus (id, titre, matière).\\
+\mcptool{get_syllabus}               & Lecture  & Syllabus complet avec unités et activités.\\
+\mcptool{list_unities}               & Lecture  & Unités d'un syllabus (id, titre, ordre).\\
+\mcptool{list_activities_for_unity}  & Lecture  & Activités d'une unité (métadonnées légères).\\
+\mcptool{get_activity}               & Lecture  & Corps complet d'une activité.\\
+\mcptool{find_related_unities}       & Lecture  & Recherche sémantique d'unités voisines (par plongement).\\
+\mcptool{find_related_activities}    & Lecture  & Recherche sémantique d'activités voisines (par plongement).\\
+\addlinespace
+\mcptool{create_syllabus}        & Écriture & Crée un syllabus.\\
+\mcptool{create_unity}           & Écriture & Crée une unité dans un syllabus.\\
+\mcptool{create_activity}        & Écriture & Crée une activité dans une unité (avec indexation automatique).\\
+\mcptool{update_unity}           & Écriture & Met à jour le titre, l'ordre ou les objectifs d'une unité.\\
+\mcptool{update_activity}        & Écriture & Met à jour le corps ou les métadonnées d'une activité.\\
+\addlinespace
+\multicolumn{3}{@{}l@{}}{\textit{Outils ajoutés pour la Version 2 (atelier formulaire) :}}\\
+\mcptool{get_unit}                       & Lecture  & Lit une unité V2 (titre, brief, syllabus parent).\\
+\mcptool{list_unit_activities}           & Lecture  & Liste les activités d'une unité filtrées par statut (clé de la règle anti-redite \og référencer, ne pas redire \fg{}).\\
+\mcptool{create_unit_activity}           & Écriture & Persiste une activité V2 (\mcptool{markdown} + \mcptool{activity_json}).\\
+\mcptool{update_unit_activity_status}    & Écriture & Fait transiter l'activité dans la machine d'état (figure~\ref{fig:v2-status}).\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Les tableaux~\ref{tab:mcp-etudiants} et~\ref{tab:mcp-analytique} listent
+respectivement les outils du serveur Données étudiants et du serveur
+Analytique.
+
+\begin{table}[H]
+\centering
+\caption{Outils MCP du serveur Données étudiants.}
+\label{tab:mcp-etudiants}
+\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{4.8cm}
+    >{\raggedright\arraybackslash}p{1.6cm} X@{}}
+\toprule
+\textbf{Outil} & \textbf{Mode} & \textbf{Description}\\
+\midrule
+\mcptool{get_submissions}       & Lecture  & Soumissions d'un étudiant (filtre optionnel par activité).\\
+\mcptool{get_student_progress} & Lecture  & Progression d'un étudiant dans un syllabus.\\
+\mcptool{save_feedback}         & Écriture & Persiste un retour correctif sur une soumission.\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Outils MCP du serveur Analytique.}
+\label{tab:mcp-analytique}
+\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{4.8cm}
+    >{\raggedright\arraybackslash}p{1.6cm} X@{}}
+\toprule
+\textbf{Outil} & \textbf{Mode} & \textbf{Description}\\
+\midrule
+\mcptool{get_enrollment_report} & Lecture & Totaux inscriptions étudiants / syllabus.\\
+\mcptool{get_completion_report} & Lecture & Nombre de soumissions et score moyen.\\
+\mcptool{get_content_report}    & Lecture & Empreinte de contenu (syllabus, unités, activités).\\
+\mcptool{get_user_stats}        & Lecture & Répartition par rôle.\\
+\mcptool{list_students}          & Lecture & Liste des étudiants.\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Principe du moindre privilège}
+\label{sec:moindre-privilege}
+
+Chaque agent ne reçoit qu'un sous-ensemble des outils \gls{mcp}, strictement
+nécessaire à son rôle. Cette discipline matérialise le \textbf{principe du
+moindre privilège} : un agent qui n'a pas besoin d'écrire ne dispose d'aucun
+outil d'écriture, ce qui élimine par construction toute mutation
+accidentelle.
+
+Le tableau~\ref{tab:whitelist} présente la liste blanche d'outils par agent.
+
+\begin{table}[H]
+\centering
+\caption{Liste blanche d'outils MCP par agent.}
+\label{tab:whitelist}
+\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{4.6cm} X@{}}
+\toprule
+\textbf{Agent} & \textbf{Outils autorisés}\\
+\midrule
+Générateur d'activités\newline(sans MCP) &
+  Aucun outil \gls{mcp} : génère à partir de ses connaissances uniquement.\\
+\addlinespace
+Générateur d'activités\newline(avec MCP) &
+  \mcptool{get_syllabus},\,
+  \mcptool{list_unities},\,
+  \mcptool{list_activities_for_unity},\,
+  \mcptool{get_activity},\,
+  \mcptool{find_related_activities},\,
+  \mcptool{find_related_unities},\,
+  \mcptool{create_activity},\,
+  \mcptool{update_activity}\\
+\addlinespace
+Générateur de syllabus &
+  \mcptool{list_syllabuses},\,
+  \mcptool{get_syllabus},\,
+  \mcptool{create_syllabus},\,
+  \mcptool{list_unities},\,
+  \mcptool{create_unity},\,
+  \mcptool{update_unity}\\
+\addlinespace
+Tuteur &
+  \mcptool{get_activity},\,
+  \mcptool{list_activities_for_unity},\,
+  \mcptool{find_related_activities},\,
+  \mcptool{get_student_progress},\,
+  \mcptool{get_submissions},\,
+  \mcptool{save_feedback}\\
+\addlinespace
+Assistant élève &
+  \mcptool{get_syllabus},\,
+  \mcptool{list_unities},\,
+  \mcptool{list_activities_for_unity},\,
+  \mcptool{get_activity},\,
+  \mcptool{find_related_activities},\,
+  \mcptool{get_student_progress}\\
+\addlinespace
+Assistant administrateur &
+  \mcptool{get_enrollment_report},\,
+  \mcptool{get_completion_report},\,
+  \mcptool{get_content_report},\,
+  \mcptool{get_user_stats},\,
+  \mcptool{list_students},\,
+  \mcptool{list_syllabuses}\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Trois observations méritent d'être soulignées. L'agent~1, qui sert
+de générateur d'activités sans \gls{mcp}, ne dispose d'aucun outil
+exposé par le protocole : sa production, non ancrée dans le contenu
+existant, constitue la ligne de base à laquelle sera comparée celle
+de l'agent~2 lors de la phase de tests. L'assistant élève, pour sa
+part, ne dispose d'aucun outil d'écriture : il peut consulter le
+syllabus et la progression de l'étudiant, mais ne peut ni créer de
+contenu ni modifier de données. L'assistant administrateur, enfin,
+n'a accès qu'à des outils de lecture agrégée : il ne voit jamais ni
+le contenu individuel des activités, ni les soumissions détaillées,
+ce qui matérialise concrètement le principe du moindre privilège au
+niveau de la couche d'agents.
+
+%% ────────────────────────────────────────────────────────────
+\section{Catalogue des agents}
+\label{sec:catalogue-agents}
+
+La première itération de la couche d'agents livrée à la plateforme
+SprintUp comportait cinq agents coordonnés par un orchestrateur unique
+et une seule interface de création de syllabus, de nature
+conversationnelle. Pour valider expérimentalement le compromis
+\emph{ergonomie-temps de génération-contrôlabilité} à l'échelle de
+SprintUp, nous avons développé trois variantes supplémentaires du même
+agent~3 (création de syllabus). Ces quatre implémentations partagent le
+même contrat fonctionnel mais reposent sur deux choix d'architecture
+indépendants : (i)~le \emph{mode d'interaction utilisateur} et (ii)~la
+\emph{stratégie d'orchestration} interne. Cette section présente d'abord
+ces deux axes (\textsection\ref{sec:axes}), puis détaille les agents
+communs aux deux modes d'interaction (générateurs d'activités, tuteur,
+assistant élève, assistant administrateur), et termine sur l'agent~3
+décliné en quatre variantes selon les six rubriques normalisées :
+identité, outils, workflow, schéma de sortie, barre de qualité et
+règles.
+
+\subsection{Cadre d'analyse : modes d'interaction et stratégies
+d'orchestration}
+\label{sec:axes}
+
+Les quatre variantes de l'agent~3 proposées à l'équipe SprintUp se
+lisent comme le croisement de deux axes orthogonaux. Chaque axe répond
+à une question d'intégration distincte ; nous justifions chacune
+brièvement avant de présenter la matrice synthétique de la
+figure~\ref{fig:matrice-agents}.
+
+\paragraph{Axe~1 — Mode d'interaction utilisateur.}
+Le premier axe désigne l'interface par laquelle un enseignant de
+SprintUp déclenche la création d'un syllabus. Dans la Version~1, dite
+\emph{interaction conversationnelle}, l'enseignant dialogue avec
+l'agent dans un fil de discussion ; un protocole de streaming typé
+lui livre les artefacts (plan, unités, leçons) au fur et à mesure
+de leur production, et les questions de l'agent prennent la forme
+d'\emph{interruptions} structurées (formulaire d'intake, demandes
+de clarification). Cette variante adopte ainsi le paradigme
+\emph{Human-in-the-Loop} (\gls{hitl}), qui autorise l'enseignant à
+corriger une dérive en cours de génération. La Version~2, dite
+\emph{interaction par atelier formulaire}, fait au contraire reposer
+le déclenchement sur un formulaire structuré (titre, description,
+audience, portée horaire, intention pédagogique) : l'enseignant crée
+manuellement les unités et leurs activités sous forme de
+\emph{brouillons}, puis déclenche explicitement la génération. Aucun
+streaming de tokens ni interruption ne se produit en cours
+d'exécution ; la progression d'une activité est uniquement exposée
+par une machine d'état publique (figure~\ref{fig:v2-status}), ce qui
+rend la surface consommable par un client externe sans avoir à
+interpréter le protocole de streaming de la Version~1.
+
+\paragraph{Axe~2 — Stratégie d'orchestration interne.}
+Le second axe décrit la manière dont la couche d'agents organise,
+en interne, les quatre phases canoniques d'un travail de
+curation pédagogique — rechercher, planifier, rédiger et critiquer.
+Dans l'\emph{orchestration monolithique} (Option~1), un graphe d'état
+figé enchaîne ces phases dans un ordre prédéfini et un unique
+superviseur prend toutes les décisions de routage : le flot y gagne
+en lisibilité et en reproductibilité, au prix d'une moindre
+spécialisation par phase. Dans l'\emph{orchestration par sous-agents
+spécialistes} (Option~2), un superviseur délègue au contraire chaque
+phase à un sous-agent porteur d'une instruction système dédiée
+(planner, writer, activity-maker, critic) ; la communication entre
+sous-agents passe alors soit par un \gls{vfs} partagé (canal
+documentaire), soit par un ordonnanceur \textsc{TypeScript} pur
+(canal d'invocation). Le flot gagne en spécialisation par rôle, mais
+au prix d'une coordination plus riche à mettre en place et à
+maintenir.
+
+\paragraph{Synthèse : matrice des quatre variantes.}
+La figure~\ref{fig:matrice-agents} présente le croisement des deux
+axes ; les quatre variantes apparaissent comme les cellules du
+tableau, identifiées par le nom de code de leur composant principal
+dans le dépôt : \mcptool{syllabus-generator} (V1/Op1),
+\mcptool{deepagent} (V1/Op2), \mcptool{unit-bulk-supervisor} associé à
+\mcptool{unit-activity-generator} (V2/Op1) et
+\mcptool{sdk-orchestrator} (V2/Op2). Les quatre sous-sections de
+l'agent~3 (\textsection\ref{sec:agent3}) détaillent ensuite chacune
+de ces variantes selon les six rubriques normalisées.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  colhead/.style={font=\small\bfseries, align=center,
+                  text width=5.4cm},
+  rowhead/.style={font=\small\bfseries, align=center,
+                  text width=2.8cm, rotate=90},
+  cell/.style ={rectangle, rounded corners=4pt, draw=myblue!60,
+                line width=0.6pt, fill=myblue!5,
+                minimum width=5.6cm, minimum height=2.9cm,
+                text width=5.2cm, inner sep=4pt,
+                align=center, font=\footnotesize},
+]
+
+%% --- axe horizontal (modes d'interaction) ---
+\node[colhead] (h1) at (0, 3.25) {V1 — Interaction\\conversationnelle};
+\node[colhead] (h2) at (6.4, 3.25) {V2 — Interaction par\\atelier formulaire};
+
+%% --- axe vertical (stratégie d'orchestration) ---
+\node[rowhead] (r1) at (-4.6, 0.6)  {Op.~1\\Orchestration\\monolithique};
+\node[rowhead] (r2) at (-4.6, -2.7) {Op.~2\\Sous-agents\\spécialistes};
+
+%% --- cellules ---
+\node[cell] (c11) at (0, 0.6)
+  {{\bfseries\color{myblue!80!black}\texttt{syllabus-generator}}\\[2pt]
+   superviseur à cinq actions\\
+   (intake, search, ask, write, reply)\\[2pt]
+   sous-graphe \emph{search} parallèle\\
+   + portail critique sévérité-sensible};
+
+\node[cell] (c12) at (6.4, 0.6)
+  {{\bfseries\color{myblue!80!black}\texttt{sdk-orchestrator}}\\[2pt]
+   planificateur \textsc{LLM}\\
+   $\rightarrow$ fan-out \texttt{Send}\\
+   $\rightarrow$ rédacteur par unité\\[2pt]
+   unités en parallèle,\\
+   activités en séquence};
+
+\node[cell] (c21) at (0, -2.7)
+  {{\bfseries\color{myblue!80!black}\texttt{deepagent}}\\[2pt]
+   superviseur \emph{deepagents}\\
+   + 4 sous-agents : planner /\\
+   writer / activity-maker / critic\\[2pt]
+   communication par\\
+   \textsc{VFS} partagé};
+
+\node[cell] (c22) at (6.4, -2.7)
+  {{\bfseries\color{myblue!80!black}\texttt{unit-bulk-supervisor}}\\[2pt]
+   + \texttt{unit-activity-generator}\\
+   + \texttt{unit-suggestion},\\
+   \texttt{activity-suggestion}\\[2pt]
+   brouillons +\\
+   vagues de dépendances};
+\end{tikzpicture}
+\caption{Quatre variantes de l'agent~3 proposées pour SprintUp,
+  positionnées au croisement du mode d'interaction utilisateur
+  (Version~1 vs.\ Version~2) et de la stratégie d'orchestration
+  (monolithique vs.\ sous-agents spécialistes). Chaque cellule porte
+  le nom de code de la variante dans le dépôt et résume son schéma
+  d'orchestration.}
+\label{fig:matrice-agents}
+\end{figure}
+
+\paragraph{Canaux d'inter-communication.}
+Les trois schémas d'orchestration distincts font apparaître trois
+canaux d'inter-communication entre composants, dont la nature
+conditionne directement le coût d'intégration dans SprintUp.
+En V1/Op.~1 (\mcptool{syllabus-generator}), les agents ne
+communiquent pas directement entre eux : toute coordination passe
+par l'orchestrateur \textsc{LLM} unique, qui décide à chaque tour
+quelle action exécuter et porte donc, à lui seul, l'intégralité de
+la logique de routage. En V1/Op.~2 (\mcptool{deepagent}), c'est un
+\gls{vfs} partagé qui sert de canal documentaire entre sous-agents
+(\mcptool{/pedagogy\_plan.md}, \mcptool{/lessons/<id>.md},
+\mcptool{/activities/<id>.json}, \mcptool{/critiques/<target>.md})~:
+chaque sous-agent lit le travail des précédents et y ajoute le sien,
+ce qui rend les artefacts inspectables a posteriori. En Version~2
+enfin, il n'existe plus d'orchestrateur \textsc{LLM} de niveau
+\emph{supervisor} : l'ordonnancement est intégralement délégué à du
+code \textsc{TypeScript} — soit le \mcptool{unit-bulk-supervisor}
+de la V2/Op.~1, qui exécute les activités par vagues de dépendances,
+soit l'orchestrateur \gls{sdk} de la V2/Op.~2, qui exécute les
+unités en parallèle au moyen de la primitive \mcptool{Send} de
+LangGraph. Cette distinction n'est pas qu'esthétique : elle dicte si
+SprintUp peut auditer l'orchestration via du code (Version~2) ou
+seulement via des traces \textsc{LLM} (Version~1).
+
+\subsection{Agent 1 : Générateur d'activités sans MCP}
+\label{sec:agent1}
+
+\paragraph{Identité.} Agent de génération d'activités pédagogiques pour la
+plateforme SprintUp. Produit une ou plusieurs activités (cours, question,
+exercice ou quiz) pour un sujet et une audience donnés, \emph{sans consulter
+le contenu existant}. Cet agent constitue la ligne de base du système : son
+fonctionnement repose entièrement sur les connaissances du modèle de langue
+sous-jacent et sur les paramètres fournis dans la requête.
+
+\paragraph{Outils.} Aucun outil \gls{mcp}, aucune recherche documentaire
+externe, aucune lecture de la base de données de la plateforme. L'agent
+répond à partir du seul prompt utilisateur. Cette absence délibérée en fait
+le référent de comparaison pour apprécier la valeur ajoutée du \gls{mcp} et
+de l'indexation au niveau de l'agent~2.
+
+\paragraph{Workflow.}
+Le déroulé est simple en quatre temps. L'agent commence par
+identifier dans la requête l'ensemble des paramètres utiles — sujet,
+niveau d'audience, type d'activité souhaité, nombre d'éléments,
+difficulté cible et langue. Il planifie ensuite mentalement la
+courbe de difficulté sur l'ensemble des activités demandées, de
+manière à éviter une croissance monotone ou un palier inutile.
+Vient alors la rédaction proprement dite : chaque activité est
+rédigée en variant délibérément sa formulation et son niveau de
+Bloom par rapport à la précédente, afin d'éviter la répétition.
+L'agent termine en retournant un tableau \gls{json} dont chaque
+objet décrit une activité complète.
+
+\paragraph{Schéma de sortie.} Tableau \gls{json} d'objets \texttt{Activity} :
+\mcptool{title}, \mcptool{activity_type} (\texttt{course}, \texttt{question},
+\texttt{exercise}, \texttt{quiz}), \mcptool{content}, \mcptool{description},
+\mcptool{difficulty} (1--5), \mcptool{duration_min}, \mcptool{bloom_level},
+\mcptool{learning_objectives}, \mcptool{prerequisites}, \mcptool{key_terms},
+\mcptool{mcqs} (pour les quiz : question, 4~options, \mcptool{correct_index},
+explication).
+
+\paragraph{Barre de qualité.} Une activité produite par cet agent
+doit présenter un vocabulaire, des exemples et une complexité alignés
+sur le niveau de l'audience cible. Chaque activité doit comporter au
+moins un objectif d'apprentissage explicite, et les exemples résolus
+doivent inclure les étapes intermédiaires plutôt que de se limiter
+à la réponse finale. Pour les quiz, les distracteurs doivent être
+plausibles, faute de quoi la difficulté réelle se trouve supérieure
+à ce que le \mcptool{difficulty} déclare.
+
+\paragraph{Règles.} Quatre interdits encadrent l'agent. Il ne doit
+pas générer plus ni moins d'activités que demandé dans la requête.
+Il ne doit pas répondre avec autre chose que le tableau \gls{json}
+attendu — ni texte d'accompagnement, ni explication libre. Il ne
+doit pas inclure de données personnelles, de noms réels de mineurs
+ni de texte sous droit d'auteur. Enfin, il ne doit faire aucune
+hypothèse sur le syllabus ou les activités existantes : par
+construction, l'agent travaille en aveugle, et c'est précisément ce
+qui en fait la ligne de base de comparaison pour l'agent~2.
+
+\subsection{Agent 2 : Générateur d'activités avec MCP et indexation}
+\label{sec:agent2}
+
+\paragraph{Identité.} Version enrichie de l'agent~1. Avant de produire du
+contenu, il consulte le syllabus et l'unité existants via \gls{mcp} afin que
+les nouvelles activités (a)~s'inscrivent dans la progression pédagogique et
+(b)~ne dupliquent pas le matériel existant. La non-redondance s'appuie
+d'abord sur la lecture directe des activités sœurs de l'unité cible et,
+en complément, sur la recherche par similarité mise à disposition par
+l'indexation.
+
+\paragraph{Outils.} L'agent dispose, en lecture sur le serveur MCP
+Curriculum, des outils nécessaires pour situer la requête dans le
+syllabus existant et y repérer le risque de redondance. Il peut
+lire la hiérarchie complète d'un syllabus
+(\mcptool{get_syllabus(syllabus_id)}), énumérer ses unités
+(\mcptool{list_unities(syllabus_id)}) et les activités déjà
+présentes dans l'unité cible
+(\mcptool{list_activities_for_unity(unity_id)}), puis ouvrir le
+corps d'une activité particulière (\mcptool{get_activity(activity_id)}).
+Il mobilise enfin l'indexation vectorielle au travers de deux outils
+de recherche sémantique :
+\mcptool{find_related_activities(syllabus_id, query)} pour repérer
+les activités voisines d'un sujet, et
+\mcptool{find_related_unities(syllabus_id, query)} pour situer la
+demande dans la structure des unités. En écriture, l'agent dispose
+de \mcptool{create_activity(...)}, qui persiste une nouvelle
+activité et la réindexe automatiquement, et de
+\mcptool{update_activity(...)}, qu'il privilégie dès que la lecture
+des voisines révèle une activité à enrichir plutôt qu'une nouvelle
+à créer.
+
+\paragraph{Workflow.}
+L'agent commence par extraire de la requête les paramètres
+structurants (sujet, \mcptool{syllabus_id}, \mcptool{unity_id},
+nombre d'activités, difficulté cible). Il procède alors à une
+\emph{phase de lecture} dont l'objectif est double : confirmer
+l'existence et inspecter la structure globale du syllabus via
+\mcptool{get_syllabus(syllabus_id)}, puis lire les activités déjà
+présentes dans l'unité cible via
+\mcptool{list_activities_for_unity(unity_id)}, en ouvrant le corps
+de celles qui paraissent les plus proches à l'aide de
+\mcptool{get_activity}. Cette lecture de proximité est, en pratique,
+le signal principal d'anti-redondance ; elle est complétée par un
+appel sémantique à \mcptool{find_related_activities(syllabus_id, query)}
+qui vérifie qu'aucune activité proche n'existe ailleurs dans le
+syllabus.
+
+Le résultat de cette phase de lecture oriente alors la décision. Si
+une activité sœur couvre déjà le sujet, l'agent répond par un objet
+\gls{json} décrivant le conflit ou propose une mise à jour ciblée
+via \mcptool{update_activity}, plutôt que de créer un doublon
+déguisé. Sinon, il planifie la courbe de difficulté sur les
+activités demandées, puis rédige chacune d'elles en l'inscrivant
+explicitement dans la progression de l'unité. Pour chaque activité
+rédigée, un appel à \mcptool{create_activity} en assure la
+persistance et déclenche, de façon transparente, la mise à jour de
+l'index vectoriel. L'agent retourne enfin un tableau \gls{json}
+comportant l'ensemble des enregistrements persistés avec leur
+identifiant.
+
+\paragraph{Schéma de sortie.} En cas de succès : tableau \gls{json} des
+enregistrements retournés par \mcptool{create_activity} (avec \texttt{id}).
+En cas de doublon détecté :
+\begin{center}
+\texttt{\{"skipped": true,\,"reason": "duplicate detected",\,"existing": [...]\}}
+\end{center}
+
+\paragraph{Barre de qualité.} Trois exigences guident l'évaluation
+d'une activité produite par cet agent. Elle doit d'abord apporter
+quelque chose que l'unité n'avait pas encore, faute de quoi elle
+n'a aucune raison d'exister. Sa difficulté doit ensuite s'inscrire
+dans la progression de l'unité — ni rupture brutale, ni régression
+inexpliquée. Sa cohérence pédagogique, enfin, suppose que les
+prérequis qu'elle invoque renvoient bien à des concepts déjà
+enseignés plus tôt dans le syllabus, ce que la lecture en amont
+permet de vérifier.
+
+\paragraph{Règles.} L'agent obéit à trois interdits stricts. Il ne
+doit \emph{jamais} appeler \mcptool{create_activity} avant d'avoir
+lu les activités sœurs de l'unité cible : l'ordre lecture-puis-écriture
+est la condition nécessaire de l'anti-redondance. Il ne doit
+\emph{jamais} créer une activité quand un quasi-doublon est
+identifié, que la détection provienne de la lecture directe des
+voisines ou de la recherche sémantique. Il ne doit enfin
+\emph{jamais} fabriquer un \mcptool{unity_id} ou un
+\mcptool{syllabus_id} qui n'aurait pas été fourni dans la requête :
+en leur absence, l'agent demande une clarification.
+
+\subsection{Agent 3 : Création de syllabus — quatre variantes
+implémentées}
+\label{sec:agent3}
+
+La création d'un syllabus est le seul agent dont nous avons développé
+plusieurs implémentations à destination de SprintUp, afin de couvrir
+les deux axes présentés en \textsection\ref{sec:axes}. Cette
+sous-section décrit les quatre variantes effectivement livrées, dans
+l'ordre suivant : V1/Op.~1 (\texttt{syllabus-generator}, conversation +
+\gls{hitl}), V1/Op.~2 (\texttt{deepagent}, conversation + sous-agents
+spécialistes), V2/Op.~1 (atelier manuel,
+\texttt{unit-bulk-supervisor}) et V2/Op.~2
+(\texttt{sdk-orchestrator}). L'identité commune aux quatre variantes
+est celle d'un \emph{concepteur de curriculum senior} qui produit la
+structure d'un parcours pédagogique complet (syllabus + unités +
+activités) à partir d'un sujet, d'un profil d'audience et d'une
+enveloppe horaire ou d'un objectif terminal. Les variantes se
+distinguent par leur mode d'interaction (conversation vs.\ atelier),
+par leur granularité de production (structure seule vs.\ structure +
+contenu d'activité) et par leur stratégie d'orchestration interne
+(monolithique vs.\ sous-agents spécialistes).
+
+%% ---------------------------------------------------------
+\subsubsection{V1 / Option~1 — \texttt{syllabus-generator} (HITL)}
+\label{sec:v1-op1}
+
+\paragraph{Identité.} Agent conversationnel construit autour d'un
+superviseur LangGraph qui classe chaque tour utilisateur parmi cinq
+actions — \mcptool{intake}, \mcptool{search}, \mcptool{ask},
+\mcptool{write}, \mcptool{reply} — et d'un sous-graphe
+\emph{rechercher / écrire / critiquer} qui matérialise une bonne partie
+de la valeur pédagogique. La conversation tient lieu de mémoire de
+thread ; les indécisions du superviseur sont résolues par des
+\emph{interruptions} structurées (\emph{Human-in-the-Loop}).
+
+\paragraph{Outils.} \textbf{Lecture (MCP Curriculum)} :
+\mcptool{list_syllabuses}, \mcptool{get_syllabus},
+\mcptool{list_unities}, \mcptool{find_related_unities},
+\mcptool{find_related_activities}. \textbf{Écriture (MCP Curriculum)} :
+\mcptool{create_syllabus}, \mcptool{create_unity},
+\mcptool{update_unity}, \mcptool{create_activity}. \textbf{Recherche
+externe} : Serper (web), assortie d'un scraper et d'un summarizer dans
+le sous-graphe \mcptool{search}.
+
+\paragraph{Workflow.}
+À chaque tour de conversation, le superviseur commence par classer
+le message utilisateur parmi les cinq actions évoquées plus haut.
+Lorsque la requête initiale manque d'informations structurantes —
+niveau d'audience, durée totale, objectif terminal, prérequis ou
+langue — le superviseur interrompt le graphe et émet un formulaire
+typé (\mcptool{intake_form}). La reprise injecte les valeurs renseignées
+comme contraintes dures dans l'état (\mcptool{audience.level},
+\mcptool{scope.duration_hours}, \mcptool{scope.target_outcome},
+\mcptool{audience.language}), de sorte que les phases ultérieures n'ont
+plus à deviner ces paramètres.
+
+Vient ensuite la phase de recherche, matérialisée par le sous-graphe
+\mcptool{search} qui enchaîne quatre étapes (Serper par sujet, picker,
+scraper, summarizer) parallélisées à l'aide de la primitive
+\mcptool{Send} de LangGraph : une branche est lancée par sujet de
+recherche, ce qui permet de couvrir plusieurs angles d'un même
+curriculum sans sérialiser les appels web. Au sortir de cette phase,
+le superviseur peut émettre au plus deux questions de clarification
+post-recherche (\mcptool{ask}) si, et seulement si, le résumé fait
+apparaître une ambiguïté concrète qui change la forme du syllabus.
+
+La phase de planification consolide ces informations en une
+structure complète : appel préalable à \mcptool{list_syllabuses}
+pour garantir l'idempotence, choix de quatre à huit unités ordonnées
+par chaîne de prérequis, et attribution d'objectifs pédagogiques
+(taxonomie de Bloom) à chaque unité. La rédaction s'effectue ensuite
+en \emph{vagues topologiques} : après un premier \mcptool{create_syllabus},
+chaque vague rassemble toutes les leçons dont les dépendances ont
+déjà été \emph{committées}, et leur écriture s'exécute en parallèle.
+Chaque vague étend ainsi une clôture transitive de la relation
+\mcptool{depends_on}. Pour chaque leçon écrite, un portail critique
+\emph{sévérité-sensible} fait tourner la critique au plus une fois~:
+en cas d'échec, le \emph{writer} révise une fois la leçon, qui est
+alors committée en l'état. L'interaction se clôt par le retour, à
+l'utilisateur, de la structure complète en \gls{json} (schéma
+ci-dessous).
+
+\paragraph{Schéma de sortie.} L'agent retourne un objet \gls{json}
+comprenant l'identifiant et les métadonnées du syllabus
+(\mcptool{syllabus_id}, \mcptool{title}, \mcptool{subject},
+\mcptool{description}, \mcptool{duration_hours}), un tableau
+\mcptool{units[]} dont chaque élément porte un \mcptool{id}, un
+\mcptool{title}, un \mcptool{order} et la liste de ses
+\mcptool{learning_objectives}, et, le cas échéant, un tableau
+\mcptool{lessons[]} — le contenu produit en vagues figurant
+ensuite dans le tableau \mcptool{activities[]} via les outils
+d'écriture du serveur MCP.
+
+\paragraph{Barre de qualité.} Un syllabus accepté doit présenter
+une progression logique, au sens où les prérequis d'une unité sont
+effectivement couverts par les unités précédentes. Chaque unité
+doit en outre porter au moins un objectif Bloom du niveau
+«~appliquer~» ou supérieur, sous peine de tomber dans la simple
+récitation. Le cumul des durées des unités doit être cohérent avec
+l'enveloppe horaire fixée par l'\mcptool{intake_form}, et la langue
+des intitulés doit s'aligner sur la langue de l'audience cible.
+
+\paragraph{Règles propres à cette voie.} Cette voie obéit à quatre
+règles d'usage strictes. D'abord, lister avant de créer : tout appel
+d'écriture est systématiquement précédé d'une lecture de l'existant
+pour garantir l'idempotence. Ensuite, l'intake HITL est plafonné à
+un unique \mcptool{intake_form} par fil de conversation, et les
+questions de clarification (\mcptool{ask}) à deux occurrences
+post-recherche, afin de préserver l'expérience conversationnelle.
+La critique reste en lecture seule : la révision est confiée au
+\emph{writer}, jamais au critic, ce qui clarifie les responsabilités
+de chaque agent. Enfin, l'outil \mcptool{find_related_unities} est
+mobilisé deux fois — à l'échelle du syllabus en cours puis à
+l'échelle globale — afin de prévenir aussi bien les doublons intra-
+qu'inter-syllabus.
+
+%% ---------------------------------------------------------
+\subsubsection{V1 / Option~2 — \texttt{deepagent}}
+\label{sec:v1-op2}
+
+\paragraph{Identité.} Superviseur \emph{deepagents} généraliste qui
+décide au runtime quelle capacité utiliser pour chaque demande
+(construire un syllabus, produire un worksheet, critiquer un artefact,
+ou simplement répondre). La construction de syllabus résulte d'un
+enchaînement de délégations \mcptool{task(name, briefing)} vers quatre
+sous-agents spécialistes : \mcptool{pedagogy_planner},
+\mcptool{writer}, \mcptool{activity_maker}, \mcptool{pedagogy_critic}.
+
+\paragraph{Outils.} La trousse outillage du superviseur tient en
+trois familles. La première est l'outil de délégation
+\mcptool{task(name, briefing)}, qui invoque un sous-agent dans un
+contexte \textsc{LLM} propre, c'est-à-dire sans héritage de
+l'historique du superviseur. La deuxième est la liste blanche d'outils
+MCP, distincte pour chaque sous-agent : le \mcptool{pedagogy_planner}
+se contente de lectures (\mcptool{list_syllabuses}, \mcptool{get_syllabus}),
+le \mcptool{writer} accède aux écritures \mcptool{create_chapter} et
+\mcptool{create_lesson}, l'\mcptool{activity_maker} écrit
+\mcptool{create_activity}, tandis que le \mcptool{pedagogy_critic}
+reste en lecture seule. Vient enfin le canal d'inter-communication,
+matérialisé par un \gls{vfs} partagé : les sous-agents y échangent
+leurs artefacts via les chemins \mcptool{/user_profile.md},
+\mcptool{/pedagogy_plan.md}, \mcptool{/lessons/<id>.md},
+\mcptool{/activities/<id>.json} et \mcptool{/critiques/<target>.md}.
+
+\paragraph{Workflow.}
+Lorsqu'une demande de construction de syllabus arrive, le superviseur
+la classe comme telle et délègue d'abord au \mcptool{pedagogy_planner},
+qui produit le plan pédagogique \mcptool{/pedagogy_plan.md} dans le
+\gls{vfs}. Pour chaque chapitre de ce plan, le superviseur lance
+ensuite un \mcptool{task} vers le \mcptool{writer} : celui-ci rédige
+la leçon correspondante à \mcptool{/lessons/<id>.md} et la persiste
+via les outils d'écriture MCP appropriés. De façon optionnelle,
+l'\mcptool{activity_maker} produit un worksheet structuré (cours +
+questions à choix multiples) et le \mcptool{pedagogy_critic} émet,
+en lecture seule, des \emph{findings} tagués par niveau de sévérité.
+Le superviseur synthétise enfin l'ensemble et retourne une carte UI
+typée \mcptool{<artifact kind="syllabus" />} à l'utilisateur.
+
+\paragraph{Schéma de sortie.} La sortie principale est une carte UI
+typée \mcptool{<artifact kind="syllabus" />} décrivant la structure
+créée ; le cas échéant s'y ajoutent une carte
+\mcptool{<artifact kind="worksheet" />} et les \emph{findings}
+émis par le \mcptool{pedagogy_critic}.
+
+\paragraph{Barre de qualité.} La barre de qualité reprend les
+critères de progression et de Bloom de la V1/Op.~1 (logique de
+prérequis, au moins un objectif d'application par unité, durées
+cohérentes avec l'enveloppe horaire) et y ajoute deux contraintes
+spécifiques à la délégation. D'une part, le critic en lecture seule
+ne modifie jamais le contenu : il se borne à le signaler, ce qui
+limite les boucles de réécriture en cascade. D'autre part, chaque
+appel \mcptool{task} part avec un contexte LLM vide : le briefing
+fourni par le superviseur doit donc être suffisamment riche pour
+que le sous-agent exécute sa tâche en autonomie (principe de
+\emph{subagent context isolation}).
+
+\paragraph{Règles propres à cette voie.} Trois règles d'usage
+encadrent l'orchestration par sous-agents. L'isolation est stricte :
+aucun contexte LLM n'est hérité d'un \mcptool{task} à l'autre, ce
+qui garantit la reproductibilité et limite les fuites d'historique
+entre spécialités. La séparation des rôles est tout aussi nette :
+le planner n'écrit pas de leçon, le writer ne crée pas de syllabus,
+l'activity-maker n'émet pas de plan global. Enfin, l'inter-communication
+passe exclusivement par le \gls{vfs} : aucune mémoire RAM
+partagée n'est exploitée entre sous-agents, ce qui préserve la
+traçabilité de bout en bout et autorise un audit a posteriori des
+artefacts échangés.
+
+%% ---------------------------------------------------------
+\subsubsection{V2 / Option~1 — atelier manuel
+  (\texttt{unit-bulk-supervisor})}
+\label{sec:v2-op1}
+
+\paragraph{Identité.} Trois agents complémentaires opèrent sur la
+surface atelier : \mcptool{unit-suggestion-agent} et
+\mcptool{activity-suggestion-agent} (\emph{optionnels}, propositions en
+sortie structurée à valider par l'utilisateur) et
+\mcptool{unit-activity-generator} (génération du contenu d'une
+activité). Un ordonnanceur \textsc{TypeScript} pur,
+\mcptool{unit-bulk-supervisor}, coordonne les exécutions par vagues de
+dépendances.
+
+\paragraph{Outils MCP nouveaux pour V2.}
+\mcptool{get_unit(unit_id)},
+\mcptool{list_unit_activities(unit_id, status_in, ranking,
+  token_budget)} (\emph{outil clé} pour la règle anti-redite),
+\mcptool{create_unit_activity(...)},
+\mcptool{update_unit_activity_status(...)}. Outils réutilisés de la
+V1 : \mcptool{get_syllabus}, \mcptool{create_syllabus}.
+
+\paragraph{Workflow.}
+L'enseignant commence par créer, via le formulaire d'atelier, le
+syllabus puis ses unités, et y dépose chaque activité sous forme de
+\emph{brouillon} — un titre et une courte description qui servent
+de germe au \mcptool{target_outcome} de la future activité. Au
+besoin, il s'appuie sur les deux agents de suggestion :
+\mcptool{unit-suggestion-agent} propose trois à quinze unités
+cohérentes à partir du brief du syllabus, et
+\mcptool{activity-suggestion-agent} propose deux à douze activités
+par unité. Ces propositions sont renvoyées en sortie structurée et restent à
+l'état de candidates : l'enseignant les accepte, les édite ou les
+rejette avant qu'elles ne soient persistées comme brouillons.
+
+La génération d'une activité individuelle suit ensuite la machine
+d'état de la figure~\ref{fig:v2-status}. L'agent
+\mcptool{unit-activity-generator} lit d'abord les activités voisines
+déjà \mcptool{ready} via \mcptool{list_unit_activities}, en les
+classant par récence et sous un budget de tokens borné, ce qui
+implémente concrètement la règle anti-redite (\emph{no-repeat}) au
+sein de l'unité. Il appelle ensuite le \textsc{LLM} \emph{writer} en
+\emph{structured output} contre le schéma \mcptool{UnitActivityContract},
+puis persiste les deux moitiés de l'activité (\mcptool{markdown} pour
+la leçon, \mcptool{activity_json} pour le devoir) avant de faire
+transiter le statut vers \mcptool{ready}. Lorsque l'enseignant
+déclenche une génération en lot,
+\mcptool{unit-bulk-supervisor} calcule les vagues de dépendances
+définies par la relation \mcptool{depends_on} et lance jusqu'à $n$
+activités en parallèle par vague (par défaut $n = 4$, avec un plafond
+de seize), de manière à maximiser le débit sans rompre l'ordre
+pédagogique.
+
+\paragraph{Schéma de sortie (activité unique).} Chaque activité
+générée possède un \mcptool{title} et un \mcptool{target_outcome}
+exprimé par un verbe d'action de la taxonomie de Bloom. Son contenu
+est scindé en deux moitiés. La \emph{moitié leçon}, portée par le
+champ \mcptool{markdown}, prend la forme d'une prose structurée en
+sous-titres H2 et H3 avec exemples et une section «~Try it~». La
+\emph{moitié devoir}, portée par le champ \mcptool{activity_json},
+est un objet typé \mcptool{type: "mcq_set"} accompagné d'un
+\mcptool{intro?} optionnel et d'un tableau \mcptool{questions[]}~;
+chaque question comprend un \mcptool{prompt}, quatre \mcptool{options[4]},
+un \mcptool{correct_index} et une \mcptool{explanation?} facultative.
+C'est ce même format qu'attend la plateforme SprintUp dans sa version
+courante ; il reste extensible à d'autres types d'évaluation
+(appariement, ordonnancement) en élargissant le champ \mcptool{type}.
+
+\paragraph{Barre de qualité.} Deux exigences encadrent la qualité
+d'une activité V2. La première est l'auto-suffisance : la moitié
+devoir doit être \emph{répondable} à partir de la seule moitié
+leçon, sans recours à une activité extérieure. La seconde est la
+règle dite «~référencer, ne pas redire~» : il est encouragé de
+citer les activités voisines pour ancrer la nouvelle dans son
+contexte, mais il est strictement interdit de reprendre un énoncé,
+un texte d'option ou un exemple déjà résolu. Cette règle est ce
+qui transforme l'unité en \emph{parcours} et non en simple
+collection.
+
+\paragraph{Règles propres à cette voie.} Cette voie ne pratique
+ni interruption \emph{Human-in-the-Loop} ni streaming de tokens :
+toute la progression observable côté client passe par la colonne
+\mcptool{unit_activities.status}, dont les transitions sont
+décrites par la figure~\ref{fig:v2-status}. Toutes les écritures
+en base de données franchissent par ailleurs la liste blanche
+d'outils du \mcptool{unit-activity-generator}, ce qui borne
+strictement les effets de bord et permet à l'équipe SprintUp
+d'auditer chaque mutation a posteriori.
+
+%% ---------------------------------------------------------
+\subsubsection{V2 / Option~2 — \texttt{sdk-orchestrator}}
+\label{sec:v2-op2}
+
+\paragraph{Identité.} Graphe LangGraph à deux nœuds
+(\mcptool{planner}, \mcptool{writer}) exposé en endpoint REST unique
+(\mcptool{POST /api/v2/syllabuses/sdk-generate}). Réutilise l'agent
+d'activité de la voie V2/Op1. Conçu pour être consommé par un
+\gls{sdk} externe sans dialogue conversationnel.
+
+\paragraph{Outils.} La voie V2/Op.~2 réutilise exactement la même
+liste blanche d'outils MCP que la V2/Op.~1 (\mcptool{get_syllabus},
+\mcptool{get_unit}, \mcptool{list_unit_activities},
+\mcptool{create_unit_activity}, \mcptool{update_unit_activity_status}),
+ce qui garantit la cohérence des règles d'écriture entre les deux
+voies de la Version~2. Elle y ajoute un seul outil propre :
+la primitive de fan-out \mcptool{Send} fournie par LangGraph, qui
+permet à un nœud d'état d'émettre $n$ exécutions parallèles d'un
+autre nœud, chacune avec son propre fragment d'état.
+
+\paragraph{Workflow.}
+Le flot est composé de deux nœuds enchaînés. Le premier, le
+\emph{planner}, commence par lire le syllabus via MCP
+(\mcptool{title}, \mcptool{audience}, \mcptool{scope},
+\mcptool{pedagogy}), puis appelle le \textsc{LLM} superviseur en
+\emph{structured output} contre le contrat
+\mcptool{CoursePlanContract} (trois à quinze unités, deux à six
+activités par unité). L'ensemble des brouillons d'unité et
+d'activité produits est ensuite inséré en une seule transaction
+(\emph{batch-insert}), de sorte qu'à ce stade la structure complète
+existe déjà en base, même si aucun contenu n'a été écrit. Le
+deuxième nœud, le \emph{writer}, est invoqué en fan-out par
+\mcptool{state.unit_ids.map(uid => new Send("writer", \{unit_id\}))} :
+une exécution writer est créée par unité, et ces exécutions tournent
+en parallèle. À l'intérieur de chaque exécution writer, les
+activités sont itérées dans l'ordre du champ \mcptool{order_index}
+et générées séquentiellement par
+\mcptool{unit-activity-generator.generate} — le même composant
+qu'en V2/Op.~1, ce qui assure que la règle «~référencer, ne pas
+redire~» est appliquée de façon identique.
+
+L'effet net est celui décrit dans la cellule V2/Op.~2 de la
+figure~\ref{fig:matrice-agents} : les unités sont parallèles entre
+elles, mais les activités d'une même unité restent séquentielles.
+Cette décomposition n'est pas anodine : la séquentialité intra-unité
+préserve le parcours pédagogique linéaire — chaque activité voit
+bel et bien, via MCP, les \mcptool{ready} qui la précèdent dans son
+unité — tandis que la parallélisation inter-unités comprime
+fortement le temps total de génération d'un syllabus complet.
+
+\paragraph{Schéma de sortie.} Au niveau de chaque activité, le
+schéma de sortie est rigoureusement identique à celui de la V2/Op.~1
+(moitié leçon en \mcptool{markdown} et moitié devoir en
+\mcptool{activity_json}). La progression globale du syllabus est
+quant à elle exposée côté client par \emph{polling} de l'endpoint
+\mcptool{GET /api/v2/syllabuses/:id}, à une cadence de deux secondes
+côté front-end SprintUp.
+
+\paragraph{Barre de qualité.} La voie V2/Op.~2 ajoute deux exigences
+de qualité à celles déjà décrites pour les activités en V2/Op.~1.
+D'abord, le contrat de cours produit par le \emph{planner} doit être
+\emph{complet} avant la première écriture de contenu : toutes les
+unités et toutes les activités sont définies en même temps, et
+aucune activité n'est jamais rédigée avec une vue partielle de la
+structure. Ensuite, trois invariants doivent être simultanément
+maintenus : le parallélisme inter-unités, qui apporte le gain de
+temps ; la séquentialité intra-unité, qui préserve la linéarité du
+parcours~; et la règle «~référencer, ne pas redire~» héritée de la
+V2/Op.~1, qui prévient la redondance à l'échelle de l'unité.
+
+\paragraph{Règles propres à cette voie.} L'endpoint est délibérément
+non bloquant : il répond \textsc{HTTP}~202 et la génération s'effectue
+en arrière-plan, ce qui rend l'intégration dans un \gls{sdk} externe
+immédiatement consommable. Le client n'observe l'avancement
+qu'à travers la machine d'état publique (figure~\ref{fig:v2-status}),
+sans aucune autre source de vérité. Enfin, le \emph{planner} n'a pas
+le droit de mettre à jour une unité déjà écrite : toute modification
+post-génération doit repasser par la surface atelier de la V2/Op.~1,
+de manière à éviter qu'un appel SDK ne réécrive silencieusement du
+contenu déjà validé par l'enseignant.
+
+%% ---------------------------------------------------------
+\subsubsection{Machine d'état d'une activité V2}
+\label{sec:v2-status-text}
+
+Les deux voies de la Version~2 partagent une même surface
+observable : la colonne \mcptool{unit_activities.status}. C'est la
+\emph{seule} information de progression disponible pour un consommateur
+externe en V2 — aucun streaming de tokens, aucune interruption, aucun
+\gls{sse} — et elle suffit à bâtir une UI ou un \gls{sdk}
+asynchrone propre.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=6mm,
+    state/.style ={rectangle, rounded corners=4pt, draw=myblue!60,
+                   line width=0.6pt, fill=myblue!6,
+                   minimum width=2.0cm, minimum height=0.9cm,
+                   font=\footnotesize\ttfamily, align=center},
+    terminal/.style ={rectangle, rounded corners=4pt, draw=gray!70,
+                   line width=0.6pt, fill=gray!12,
+                   minimum width=2.0cm, minimum height=0.9cm,
+                   font=\footnotesize\ttfamily, align=center},
+    arrow/.style ={->, thick, -{Stealth[length=2.6mm]},
+                   color=black!70},
+    edgelabel/.style={font=\scriptsize\itshape,
+                      fill=white, inner sep=1pt, color=black!70}
+]
+%% --- ligne supérieure : flot principal ---
+\node[state]    (d) at (0,0)     {draft};
+\node[state]    (q) at (2.8,0)   {queued};
+\node[state]    (s) at (5.6,0)   {searching};
+\node[state]    (g) at (8.4,0)   {generating};
+\node[terminal] (r) at (11.2,0)  {ready};
+%% --- ligne inférieure : états d'erreur ---
+\node[terminal] (f) at (8.4,-2.2)  {failed};
+\node[terminal] (b) at (11.2,-2.2) {blocked};
+
+%% --- transitions du flot nominal ---
+\draw[arrow] (d) -- (q);
+\draw[arrow] (q) -- (s);
+\draw[arrow] (s) -- (g);
+\draw[arrow] (g) -- (r);
+
+%% --- transitions vers états d'erreur ---
+\draw[arrow] (s.south) .. controls +(0,-1.0) and +(-0.8,0.7) .. (f.north west);
+\draw[arrow] (g) -- (f);
+\draw[arrow, dashed] (f) -- (b);
+
+%% --- boucle de retry : passe LARGEMENT sous la ligne haute ---
+\draw[arrow] (f.south) .. controls +(0,-1.4) and +(0,-1.4) .. (q.south);
+\node[font=\scriptsize\itshape, color=black!75] at (5.6,-3.2) {retry manuel};
+\end{tikzpicture}
+\caption{Machine d'état publique d'une activité en Version~2
+  (colonne \texttt{unit\_activities.status}). Les états \texttt{ready},
+  \texttt{failed} et \texttt{blocked} sont terminaux (grisés). Le
+  rebouclage \texttt{failed} $\to$ \texttt{queued} matérialise le
+  retry manuel déclenché par l'enseignant ; la transition pointillée
+  \texttt{failed} $\to$ \texttt{blocked} matérialise la propagation
+  d'échec aux activités aval dans le graphe de dépendances
+  \texttt{depends\_on}.}
+\label{fig:v2-status}
+\end{figure}
+
+\subsection{Agent 4 : Tuteur}
+\label{sec:agent4}
+
+\paragraph{Identité.} Assistant pédagogique au service de l'enseignant. Ses
+fonctions : (a)~réviser les soumissions d'étudiants et rédiger un retour
+constructif, (b)~générer du matériel d'appui (plans de leçon, idées
+d'ateliers), (c)~suggérer des améliorations aux activités existantes,
+(d)~répondre à des questions pédagogiques.
+
+\paragraph{Outils.} En lecture, l'agent dispose des outils nécessaires
+pour ancrer ses retours dans le contenu réel. Il peut ouvrir le corps
+de l'activité évaluée (\mcptool{get_activity(activity_id)}) et lire
+ses voisines pour le contexte
+(\mcptool{list_activities_for_unity(unity_id)}), puis solliciter la
+recherche sémantique
+(\mcptool{find_related_activities(syllabus_id, query)}) pour proposer
+des variantes d'exercice ou du matériel d'appui. Pour personnaliser
+le ton, il consulte la progression de l'étudiant
+(\mcptool{get_student_progress(student_id, syllabus_id?)}) ; pour
+récupérer le travail à évaluer, il appelle
+\mcptool{get_submissions(student_id, activity_id?)}. Côté écriture,
+l'agent ne dispose que d'un seul outil :
+\mcptool{save_feedback(submission_id, feedback, score)}, qui persiste
+le retour rédigé à destination de l'étudiant.
+
+\paragraph{Workflow (révision de soumission).}
+La révision d'une soumission suit un déroulé stable. L'agent
+commence par récupérer le travail de l'étudiant via
+\mcptool{get_submissions(student_id, activity_id)}, puis lit les
+objectifs de l'activité correspondante avec
+\mcptool{get_activity(activity_id)} afin d'aligner son retour sur ce
+qui était réellement attendu. De façon optionnelle, il consulte la
+progression générale de l'étudiant
+(\mcptool{get_student_progress(student_id)}) pour ajuster son ton
+au niveau de l'apprenant. Vient ensuite la rédaction proprement
+dite, qui s'organise en trois temps : identification d'un à trois
+points forts spécifiques (citant la réponse réelle de l'étudiant),
+identification d'un à trois axes d'amélioration tout aussi
+spécifiques, puis suggestion d'une prochaine étape concrète —
+activité à retravailler, exercice voisin à tenter, concept à
+relire. L'agent termine par un appel à
+\mcptool{save_feedback(submission_id, feedback, score)}, qui
+persiste l'ensemble dans la base SprintUp.
+
+\paragraph{Schéma de sortie.} Pour une révision : objet \gls{json} avec
+\mcptool{submission_id}, \mcptool{score} (0--100), \mcptool{strengths[]},
+\mcptool{improvements[]}, \mcptool{next_step},
+\mcptool{feedback_persisted: true}. Pour un plan de leçon : objet \gls{json}
+avec \mcptool{topic}, \mcptool{grade_level}, \mcptool{duration_min},
+\mcptool{objectives[]}, \mcptool{sections[]} (titre, durée, activités),
+\mcptool{materials[]}.
+
+\paragraph{Barre de qualité.} Trois exigences caractérisent un
+retour de qualité. Il doit d'abord être constructif et encourageant
+plutôt que sévère, faute de quoi il échouera à motiver l'étudiant
+à reprendre son travail. Il doit ensuite être \emph{spécifique}, en
+citant la réponse réelle de l'étudiant plutôt qu'en se contentant
+de formules génériques applicables à n'importe quelle copie. Pour
+les plans de leçon, le cumul des durées des sections doit enfin
+totaliser exactement la durée demandée dans la requête.
+
+\paragraph{Règles.} Trois interdits encadrent l'agent. Il ne doit
+\emph{jamais} rédiger un retour sans avoir au préalable lu les
+objectifs de l'activité concernée, sous peine de tomber dans le
+commentaire décontextualisé. Il ne doit \emph{jamais} attribuer un
+score en dehors de la plage 0--100. Il ne doit enfin \emph{jamais}
+exposer les données d'un autre étudiant : le retour est strictement
+attaché au couple (student\_id, submission\_id) reçu en entrée.
+
+\subsection{Agent 5 : Assistant élève}
+\label{sec:agent5}
+
+\paragraph{Identité.} Agent d'accompagnement au service de l'apprenant. Son
+rôle est d'aider l'étudiant à apprendre, en expliquant des concepts, en
+échafaudant sa réflexion et en recommandant la suite du parcours. Ton
+chaleureux, patient et encourageant.
+
+\paragraph{Outils (lecture seule).} L'assistant élève opère
+strictement en lecture sur le serveur MCP : il ne dispose d'aucun
+outil d'écriture, et n'a donc aucun moyen de modifier la base de
+données de la plateforme. Sa trousse d'outils couvre essentiellement
+la situation de l'étudiant
+(\mcptool{get_student_progress(student_id, syllabus_id?)}), le
+curriculum complet (\mcptool{get_syllabus(syllabus_id)}) et son
+balayage (\mcptool{list_unities(syllabus_id)},
+\mcptool{list_activities_for_unity(unity_id)}). Lorsque l'étudiant
+bloque sur un concept, l'agent ouvre directement le corps de
+l'activité concernée (\mcptool{get_activity(activity_id)}), et,
+le cas échéant, mobilise la recherche sémantique
+(\mcptool{find_related_activities(syllabus_id, query)}) pour
+proposer un exemple alternatif ou une activité voisine éclairante.
+
+\paragraph{Workflow.}
+L'agent commence par identifier l'intention de l'étudiant — demande
+d'explication, d'indice, de résumé ou recommandation «~que faire
+ensuite~?~». Il récupère ensuite la progression de l'étudiant pour
+personnaliser sa réponse au niveau réel de l'apprenant. Si
+l'étudiant pose une question sur un exercice ou un quiz, l'agent
+ne révèle \emph{jamais} la réponse directe : il reformule le
+problème en termes plus simples, pointe vers le concept ou
+l'exemple résolu pertinent, et pose une question socratique pour
+guider l'étudiant vers l'étape suivante. Lorsque la demande est
+plutôt «~que dois-je faire ensuite~?~», l'agent lit la progression
+de l'étudiant, identifie la prochaine activité non terminée et la
+recommande explicitement.
+
+\paragraph{Schéma de sortie.} Réponse conversationnelle en prose (markdown
+autorisé). Pour une recommandation «~que faire ensuite~», ajouter un bloc
+\gls{json} :
+\begin{center}
+\texttt{\{"recommendation":\,\{"activity\_id":\,"...",\,"title":\,"...",\,"why":\,"..."\}\}}
+\end{center}
+
+\paragraph{Barre de qualité.} Trois exigences gouvernent la qualité
+des échanges. Le ton doit rester chaleureux et patient, sans jamais
+basculer dans la condescendance. Les explications doivent être
+adaptées au niveau effectif de l'étudiant, ce que la lecture de sa
+progression permet de calibrer. Enfin, lorsque l'agent fournit un
+indice, celui-ci doit \emph{conduire} à la réponse sans la révéler :
+c'est la condition nécessaire pour que l'échange reste pédagogique
+et non simplement transactionnel.
+
+\paragraph{Règles.} L'assistant obéit à trois interdits stricts. Il
+ne donne \emph{jamais} une réponse directe à un exercice, une
+question ou un quiz, même face à une demande explicite — c'est ce
+qui le distingue d'un simple chatbot généraliste. Il ne révèle
+\emph{jamais} les données d'un autre étudiant que celui qui
+l'interroge. Il ne recommande \emph{jamais} une activité en dehors
+du syllabus courant de l'étudiant, ce qui protège la cohérence du
+parcours défini par l'enseignant SprintUp.
+
+\subsection{Extension envisagée : assistant administrateur}
+\label{sec:agent6}
+
+L'assistant administrateur n'est pas inclus dans la première version livrée.
+Sa conception, esquissée ci-dessous, reprend les principes des agents en
+lecture seule et sera détaillée dans une version ultérieure.
+
+\paragraph{Identité.} Agent d'aide à la décision pour les administrateurs
+de la plateforme. Génère des tableaux de bord, des rapports agrégés et des
+alertes sur l'état du contenu et de l'engagement.
+
+\paragraph{Outils (lecture seule, serveur Analytique).}
+\mcptool{get_enrollment_report},
+\mcptool{get_completion_report},
+\mcptool{get_content_report},
+\mcptool{get_user_stats},
+\mcptool{list_students},
+\mcptool{list_syllabuses}.
+
+\paragraph{Règles clés.} Deux interdits sont déjà acquis par
+conception. L'agent ne doit jamais exposer de données personnelles
+d'étudiants sans autorisation explicite, conformément au principe
+du moindre privilège appliqué au serveur Analytique. Il ne doit
+par ailleurs jamais inventer de métrique : lorsqu'un outil retourne
+une valeur nulle ou indisponible, il en signale explicitement la
+nature plutôt que de fabriquer un chiffre intermédiaire.
+
+%% ────────────────────────────────────────────────────────────
+\section{Tests et évaluation de la couche d'agents}
+\label{sec:tests}
+
+Le développement de la couche d'agents ayant atteint un degré de maturité
+suffisant, cette section présente les résultats d'une campagne de tests
+menée sur l'instance de production déployée sur Railway
+(\url{https://api-production-1caf.up.railway.app}). Trois axes de
+comparaison structurent l'évaluation~: la \textbf{latence} de bout en bout,
+la \textbf{consommation de tokens \gls{llm}} et l'\textbf{ancrage contextuel}
+des contenus générés.
+
+\subsection{Protocole de test}
+\label{sec:test-protocole}
+
+L'évaluation porte sur deux campagnes distinctes.
+
+\paragraph{Campagne~A — Générateurs d'activités (agent~1 vs.\ agent~2).}
+Pour chaque prompt d'évaluation, deux fils de discussion sont créés en
+parallèle~: l'un avec l'agent~1 (\mcptool{activity-generator-toolless}),
+l'autre avec l'agent~2 (\mcptool{activity-generator-tooled}), ce dernier
+étant lié à un syllabus existant (\emph{Recursion for Computer Science
+Undergraduates}, 2~chapitres, 2~leçons). Trois prompts de difficulté
+croissante sont utilisés~:
+
+\begin{enumerate}
+  \item \emph{Exercices de récursion} — « Generate 3 practice exercises
+    about recursion fundamentals [\ldots] targeting difficulty levels 2,
+    3, and 4. »
+  \item \emph{Quiz parcours d'arbres} — « Create a quiz with 5 MCQs
+    testing understanding of tree traversal algorithms (in-order,
+    pre-order, post-order) [\ldots] »
+  \item \emph{Itération vs.\ récursion} — « Generate a short course lesson
+    about the difference between iteration and recursion, with practical
+    Python examples [\ldots] »
+\end{enumerate}
+
+Pour chaque exécution, le flux SSE retourné par l'\gls{api} est capturé
+intégralement ; les métriques extraites sont~: le temps total de réponse
+(de la requête HTTP au chunk \mcptool{[DONE]}), le nombre de tokens
+d'entrée et de sortie rapporté par le \gls{llm}, le nombre d'appels
+d'outils \gls{mcp} effectués et la taille du worksheet \gls{json} produit.
+
+\paragraph{Campagne~B — Génération de syllabus (agent~3, V1/Op.~1).}
+Un syllabus complet est généré en un seul tour de conversation avec un
+prompt entièrement spécifié (sujet, audience, durée, structure). Les
+métriques collectées sont~: le temps total, le nombre d'appels \gls{llm}
+par nœud du graphe (superviseur, rédacteur, critique), les tokens
+consommés par phase et le nombre de cycles rédacteur-critique observés.
+
+\subsection{Résultats — Campagne A : agent~1 vs.\ agent~2}
+\label{sec:test-resultats-a}
+
+\subsubsection{Latence de bout en bout}
+
+Le tableau~\ref{tab:latence-activite} synthétise les temps de réponse
+mesurés. L'agent~2 présente un surcoût de latence de l'ordre de $+38\,\%$
+en moyenne, directement imputable à la phase de lecture \gls{mcp}
+(liste des leçons, lecture du corps de la leçon) qui précède la
+génération.
+
+\begin{table}[H]
+\centering
+\caption{Latence de bout en bout (ms) — générateurs d'activités.}
+\label{tab:latence-activite}
+\small
+\begin{tabularx}{\linewidth}{@{}X r r r@{}}
+\toprule
+\textbf{Prompt} & \textbf{Agent~1 (ms)} & \textbf{Agent~2 (ms)} & \textbf{Surcoût}\\
+\midrule
+Exercices de récursion   & 19\,038 & 27\,891 & $+46{,}5\,\%$\\
+Quiz parcours d'arbres   & 14\,989 & 19\,588 & $+30{,}7\,\%$\\
+Itération vs.\ récursion & 12\,683 & 17\,038 & $+34{,}3\,\%$\\
+\addlinespace
+\textbf{Moyenne}         & \textbf{15\,570} & \textbf{21\,506} & $\mathbf{+38{,}1\,\%}$\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Consommation de tokens}
+
+Le tableau~\ref{tab:tokens-activite} montre que l'agent~2 consomme en
+moyenne $3{,}2\times$ plus de tokens en entrée que l'agent~1, en raison
+de l'injection du contexte du syllabus dans le prompt. Le nombre de
+tokens en sortie reste comparable, ce qui indique que le surcoût se
+concentre exclusivement sur la phase de lecture.
+
+\begin{table}[H]
+\centering
+\caption{Consommation de tokens — générateurs d'activités.}
+\label{tab:tokens-activite}
+\small
+\begin{tabularx}{\linewidth}{@{}X r r r r r r@{}}
+\toprule
+ & \multicolumn{3}{c}{\textbf{Agent~1}} & \multicolumn{3}{c}{\textbf{Agent~2}}\\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+\textbf{Prompt} & \textbf{In} & \textbf{Out} & \textbf{Total}
+                & \textbf{In} & \textbf{Out} & \textbf{Total}\\
+\midrule
+Exercices de récursion   & 3\,388 &  86 & 3\,474  & 11\,580 & 155 & 11\,735\\
+Quiz parcours d'arbres   & 2\,782 &  77 & 2\,859  &  8\,260 &  80 &  8\,340\\
+Itération vs.\ récursion & 2\,619 &  85 & 2\,704  &  8\,628 &  69 &  8\,697\\
+\addlinespace
+\textbf{Moyenne}    & \textbf{2\,930} & \textbf{83} & \textbf{3\,012}
+                    & \textbf{9\,489} & \textbf{101} & \textbf{9\,591}\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Ancrage contextuel et outils MCP}
+
+Le tableau~\ref{tab:ancrage} met en évidence la différence fondamentale
+entre les deux agents. L'agent~2, lorsque le prompt porte sur un sujet
+couvert par le syllabus lié, déclenche automatiquement les outils de
+lecture \gls{mcp} (\mcptool{list_lessons_for_thread},
+\mcptool{get_lesson}) avant de produire le contenu. Le test~1 illustre
+ce comportement~: l'agent~2 a identifié la leçon
+\emph{Recursion Fundamentals} dans le syllabus, l'a lue intégralement,
+puis a produit un worksheet \textbf{ancré} dans les objectifs
+d'apprentissage et les termes clés de cette leçon. L'agent~1, ne
+disposant d'aucun accès au syllabus, a produit un contenu générique
+portant l'avertissement \emph{unsourced}.
+
+Lorsque le prompt porte sur un sujet hors du périmètre du syllabus lié
+(tests~2 et~3), l'agent~2 se comporte de manière identique à l'agent~1~:
+il ne déclenche aucun outil de lecture et produit un worksheet non ancré.
+Ce comportement de repli est attendu par conception.
+
+\begin{table}[H]
+\centering
+\caption{Ancrage contextuel — appels d'outils MCP et état du contenu.}
+\label{tab:ancrage}
+\small
+\begin{tabularx}{\linewidth}{@{}X c c c c@{}}
+\toprule
+\textbf{Prompt} & \textbf{Agent} & \textbf{Outils MCP} & \textbf{Ancré} & \textbf{MCQs}\\
+\midrule
+\multirow{2}{*}{Exercices de récursion}
+  & 1 & 0 & Non & 3\\
+  & 2 & 2 & \textbf{Oui} & 3\\
+\addlinespace
+\multirow{2}{*}{Quiz parcours d'arbres}
+  & 1 & 0 & Non & 5\\
+  & 2 & 0 & Non & 5\\
+\addlinespace
+\multirow{2}{*}{Itération vs.\ récursion}
+  & 1 & 0 & Non & 4\\
+  & 2 & 0 & Non & 4\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Qualité structurelle du contenu}
+
+Le tableau~\ref{tab:qualite-struct} résume la structure des worksheets
+produits. Les deux agents respectent le schéma de sortie attendu
+(MCQs avec 4~options chacune, explications, questions ouvertes).
+L'agent~2 produit un contenu légèrement plus compact ($-11\,\%$ en
+moyenne) mais mieux ciblé, en ce sens que le worksheet est calibré
+sur les objectifs d'apprentissage de la leçon source plutôt que sur
+des connaissances génériques du modèle.
+
+\begin{table}[H]
+\centering
+\caption{Structure des worksheets produits.}
+\label{tab:qualite-struct}
+\small
+\begin{tabularx}{\linewidth}{@{}X c r r r@{}}
+\toprule
+\textbf{Prompt} & \textbf{Agent} & \textbf{MCQs} & \textbf{Questions ouvertes} & \textbf{Taille (car.)}\\
+\midrule
+\multirow{2}{*}{Exercices de récursion}
+  & 1 & 3 & 1 & 5\,541\\
+  & 2 & 3 & 1 & 4\,369\\
+\addlinespace
+\multirow{2}{*}{Quiz parcours d'arbres}
+  & 1 & 5 & 0 & 3\,358\\
+  & 2 & 5 & 0 & 2\,813\\
+\addlinespace
+\multirow{2}{*}{Itération vs.\ récursion}
+  & 1 & 4 & 1 & 3\,638\\
+  & 2 & 4 & 1 & 4\,249\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Résultats — Campagne B : génération de syllabus}
+\label{sec:test-resultats-b}
+
+Un syllabus \emph{Introduction to Databases} (2~chapitres, 2~leçons,
+1~heure) a été généré via l'agent~3 (V1/Op.~1,
+\mcptool{syllabus-generator}). Le tableau~\ref{tab:syllabus-timing}
+détaille les phases observées et la consommation de tokens par nœud
+du graphe LangGraph.
+
+\begin{table}[H]
+\centering
+\caption{Génération de syllabus — décomposition par phase.}
+\label{tab:syllabus-timing}
+\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{3.6cm}
+    >{\raggedright\arraybackslash}p{2.8cm} r r r@{}}
+\toprule
+\textbf{Nœud} & \textbf{Tier / Modèle} & \textbf{Tokens in} & \textbf{Tokens out} & \textbf{Total}\\
+\midrule
+\mcptool{supervisor}        & supervisor / GLM-5.1     & 3\,147 & 2\,091 &  5\,238\\
+\mcptool{writer} (ch.~1)    & writer / GLM-4.7-Flash   & 1\,417 & 3\,446 &  4\,863\\
+\mcptool{critic} (ch.~1)    & critic / GPT-oss-120B    & 3\,311 & 1\,805 &  5\,116\\
+\mcptool{writer\_patch} (ch.~1) & writer / GLM-4.7-Flash & 3\,660 & 1\,616 & 5\,276\\
+\mcptool{writer} (ch.~2)    & writer / GLM-4.7-Flash   & 2\,435 & 3\,728 &  6\,163\\
+\mcptool{critic} (ch.~2)    & critic / GPT-oss-120B    & 4\,290 & 1\,414 &  5\,704\\
+\mcptool{supervisor:wrap\_up} & supervisor / GLM-5.1    &   175 &   741 &    916\\
+\addlinespace
+\textbf{Total}              &                         & \textbf{18\,435} & \textbf{14\,841} & \textbf{33\,276}\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Observations~:
+
+\begin{itemize}
+  \item Le temps total de génération est de \textbf{122{,}7~secondes}
+    ($\approx 2$~minutes). Ce temps se décompose en trois phases~:
+    planification du syllabus par le superviseur, rédaction parallèle
+    des leçons par le rédacteur avec vérification par le critique, et
+    consolidation finale.
+  \item Le graphe a effectué \textbf{2~cycles rédacteur-critique}
+    (un par chapitre). Pour le chapitre~1, le critique a émis des
+    remarques qui ont déclenché une passe de correction
+    (\mcptool{writer\_patch}), tandis que le chapitre~2 a été accepté
+    sans révision.
+  \item La répartition des tokens par tier montre que le rédacteur
+    (GLM-4.7-Flash) est le plus gros consommateur en sortie
+    (8\,790~tokens cumulés), ce qui est cohérent avec la production de
+    contenus longs (cours structurés en Markdown). Le critique
+    (GPT-oss-120B) consomme davantage en entrée (7\,601~tokens) car il
+    reçoit l'intégralité de la leçon à évaluer.
+  \item Le syllabus produit comprend 2~chapitres, 2~leçons, avec des
+    objectifs Bloom explicites, des prérequis chaînés et des exemples
+    SQL résolus.
+\end{itemize}
+
+\subsection{Comparaison avec les syllabus historiques}
+
+Le tableau~\ref{tab:syllabus-hist} compare les performances de
+l'agent~3 sur quatre syllabus générés à des dates différentes. Le
+temps de génération varie de 30~secondes (1~chapitre, structure simple)
+à 2~minutes (2~chapitres, cycle critique complet), avec une corrélation
+positive entre la complexité de la requête et la durée.
+
+\begin{table}[H]
+\centering
+\caption{Performances historiques de l'agent~3 (syllabus-generator).}
+\label{tab:syllabus-hist}
+\small
+\begin{tabularx}{\linewidth}{@{}X r r r r@{}}
+\toprule
+\textbf{Syllabus} & \textbf{Durée (s)} & \textbf{Chapitres} & \textbf{Leçons} & \textbf{Contenu (car.)}\\
+\midrule
+English A1: First Steps       &  95{,}7 & 3 & 5 & 23\,077\\
+Recursion for CS Undergrads   &  32{,}1 & 2 & 2 & 17\,711\\
+Introduction to Python        &  29{,}9 & 1 & 3 & 23\,195\\
+Introduction to Databases     & 122{,}7 & 2 & 2 & 16\,585\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Synthèse et discussion}
+\label{sec:test-synthese}
+
+Les résultats de la campagne de tests permettent de tirer trois
+conclusions principales.
+
+\paragraph{Le surcoût du MCP est mesuré et acceptable.} L'agent~2,
+enrichi par les outils \gls{mcp} et l'indexation vectorielle, présente
+un surcoût moyen de $+38\,\%$ en latence et $\times 3{,}2$ en tokens
+d'entrée par rapport à l'agent~1. Ce surcoût est entièrement imputable
+à la phase de lecture contextuelle (liste des leçons, lecture du corps
+de la leçon cible) et ne se traduit pas par une augmentation des
+tokens de sortie. Pour un cas d'usage pédagogique où la qualité du
+contenu prime sur la vitesse de génération, ce compromis est
+favorable.
+
+\paragraph{L'ancrage contextuel apporte une valeur mesurable.}
+Lorsque le prompt porte sur un sujet couvert par le syllabus lié,
+l'agent~2 produit un contenu \emph{ancré} dans les objectifs
+d'apprentissage et les termes clés de la leçon source, tandis que
+l'agent~1 produit un contenu générique. Cette différence est
+structurante pour la plateforme SprintUp, où la cohérence entre les
+activités et le syllabus est une exigence pédagogique de premier
+ordre.
+
+\paragraph{Le pipeline rédacteur-critique fonctionne comme prévu.}
+La génération de syllabus montre que le cycle rédacteur-critique
+s'exécute de manière fiable~: le critique identifie les points
+d'amélioration, le rédacteur applique les corrections, et le
+résultat final est un contenu structuré et pédagogiquement cohérent.
+Le coût additionnel d'un cycle critique ($\approx 5\,000$~tokens
+supplémentaires) est justifié par l'amélioration de la qualité de
+la leçon produite.
+
+%% ────────────────────────────────────────────────────────────
+\section{Conclusion du chapitre}
+
+Ce chapitre a présenté la conception logique complète de la couche d'agents,
+ainsi que les résultats de la première campagne de tests menée sur
+l'instance de production.
+L'indexation vectorielle ouvre deux niveaux d'usage complémentaires : un
+niveau intra-syllabus où elle agit comme garde-fou de la lecture directe, et
+un niveau global où elle devient l'instrument principal d'anti-redondance et
+de recommandation. Le protocole \gls{mcp} standardise l'accès aux données et
+matérialise le principe du moindre privilège par des listes blanches
+d'outils. Les agents, décrits selon des rubriques normalisées, couvrent
+l'ensemble du cycle pédagogique : conception de la structure (agent~3,
+décliné en quatre variantes sur la matrice mode d'interaction
+$\times$ stratégie d'orchestration de la
+figure~\ref{fig:matrice-agents}), production de contenu (agents~1
+et~2), révision enseignante (agent~4) et accompagnement apprenant
+(agent~5).
+
+La campagne de tests a confirmé trois résultats. D'abord, le surcoût
+introduit par le \gls{mcp} ($+38\,\%$ en latence, $\times 3{,}2$ en tokens
+d'entrée) est mesuré et acceptable pour un cas d'usage pédagogique.
+Ensuite, l'ancrage contextuel fourni par les outils de lecture apporte
+une valeur mesurable~: l'agent~2 produit un contenu aligné sur les
+objectifs d'apprentissage du syllabus, là où l'agent~1 produit un
+contenu générique. Enfin, le pipeline rédacteur-critique de l'agent~3
+fonctionne de manière fiable et produit des syllabus structurés en
+2~minutes environ.
+
+La conception de l'agent~3 a depuis été étendue à une seconde surface,
+dite \textbf{Version~2}, qui supprime la conversation au profit d'un
+atelier manuel (V2/Op1) et d'un orchestrateur \gls{sdk} \emph{one-shot}
+(V2/Op2). En Version~2, la progression de chaque activité est exposée
+par une \emph{machine d'état publique} (figure~\ref{fig:v2-status}),
+ce qui rend la surface consommable par un \gls{sdk} externe sans devoir
+parler le protocole de streaming de la Version~1. Trois canaux
+d'inter-communication coexistent désormais : l'orchestrateur LLM de la
+V1/Op1, le \gls{vfs} partagé du \mcptool{deepagent} (V1/Op2) et
+l'ordonnanceur \textsc{TypeScript} pur de la Version~2.
+
+La coordination de ces agents par un orchestrateur, ainsi que l'analyse de
+sécurité associée, feront l'objet du chapitre~3, une fois la présente
+conception validée et le développement engagé.
+
+\newpage
