@@ -1,0 +1,203 @@
+%% ============================================================
+%%  RAPPORT PFE – MASTER PROFESSIONNEL EN CYBERSÉCURITÉ
+%%  SprintUp – Couche d'agents IA (RAG + MCP)
+%%  Fichier principal — compiler avec pdfLaTeX + Biber
+%% ============================================================
+\documentclass[12pt,a4paper,oneside]{book}
+
+%% ── Encodage & Langue ──────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french,english]{babel}
+
+%% ── Mise en page ───────────────────────────────────────────
+\usepackage{geometry}
+\geometry{top=2.5cm, bottom=2.5cm, left=3cm, right=2.5cm,
+  headheight=15.5pt}
+\addtolength{\topmargin}{-3.5pt}
+
+%% ── Interligne ─────────────────────────────────────────────
+\usepackage{setspace}
+\onehalfspacing
+
+%% ── Polices & Couleurs ─────────────────────────────────────
+\usepackage{lmodern}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\definecolor{myblue}{RGB}{0,70,127}
+\definecolor{mygray}{RGB}{100,100,100}
+
+%% ── Liens ──────────────────────────────────────────────────
+\usepackage{url}
+
+%% ── Citations & Biblio ─────────────────────────────────────
+\usepackage{csquotes}
+\usepackage[backend=bibtex, style=ieee, sorting=none]{biblatex}
+\addbibresource{references.bib}
+
+%% ── Hyperref (chargé APRÈS biblatex pour les liens actifs) ─
+\usepackage[unicode]{hyperref}
+\hypersetup{
+  colorlinks   = true,
+  linkcolor    = blue,
+  citecolor    = blue,
+  urlcolor     = blue,
+  pdfborder    = {0 0 0},
+  bookmarks    = true,
+  bookmarksopen= true,
+  pdftitle     = {Rapport PFE SprintUp},
+  pdfauthor    = {Wajih Zouinkhi et Hamdi Soudani}
+}
+\usepackage{bookmark}
+
+%% ── Graphiques ─────────────────────────────────────────────
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\graphicspath{{images/}}
+
+%% ── TikZ ───────────────────────────────────────────────────
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, calc}
+
+%% ── Tableaux ───────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{multirow}
+
+%% ── Listes ─────────────────────────────────────────────────
+\usepackage{enumitem}
+\setlist[itemize]{label=--, leftmargin=1.25cm,
+  itemsep=0.35em, topsep=0.35em, parsep=0pt, partopsep=0pt}
+\setlist[enumerate]{leftmargin=1.25cm,
+  itemsep=0.35em, topsep=0.35em, parsep=0pt, partopsep=0pt}
+
+%% ── Code source ────────────────────────────────────────────
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{myblue}\bfseries,
+  commentstyle=\color{mygray}\itshape,
+  stringstyle=\color{red!70!black},
+  numbers=left, numberstyle=\tiny\color{mygray},
+  frame=single, breaklines=true, breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{mygray}{$\hookrightarrow$}\space},
+  captionpos=b, xleftmargin=1em
+}
+\usepackage{verbatim}
+
+%% ── Identifiants techniques cassables (MCP, code) ──────────
+%% \mcptool{find_related_activities} : police typewriter avec
+%% points de césure aux caractères non-alphanumériques (_, (, ,, .),
+%% ce qui évite les débordements en marge droite tout en gardant
+%% les noms entiers tant qu'ils tiennent sur une ligne.
+%% S'appuie sur la machinerie d'\url{} du package url : les
+%% underscores ne nécessitent PAS d'échappement dans l'argument.
+\makeatletter
+\DeclareUrlCommand\mcptool@cmd{\urlstyle{tt}}
+\providecommand{\mcptool}{}
+\renewcommand{\mcptool}[1]{\mcptool@cmd{#1}}
+%% Élargir la liste des caractères où la césure est autorisée
+%% dans \mcptool{...} (par défaut url ne casse pas à _ ni à ()
+\g@addto@macro\UrlBreaks{\do\_\do\(\do\)\do\,\do\.\do\;\do\:}
+\makeatother
+%% Anti-débordement de secours pour les paragraphes denses :
+\setlength{\emergencystretch}{3em}
+
+%% ── Boîtes colorées ────────────────────────────────────────
+\usepackage{tcolorbox}
+\tcbuselibrary{skins, breakable}
+
+%% ── Divers ─────────────────────────────────────────────────
+\usepackage{parskip}
+\usepackage{pifont}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+%% ── TOC ────────────────────────────────────────────────────
+\usepackage{tocloft}
+\renewcommand{\cftchapfont}{\bfseries}
+\renewcommand{\cftsecfont}{\normalfont}
+
+%% ── Acronymes ──────────────────────────────────────────────
+\usepackage[acronym, toc, nonumberlist]{glossaries}
+\makeglossaries
+\input{frontmatter/acronyms}
+
+%% ── Style chapitres ────────────────────────────────────────
+\usepackage{titlesec}
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{myblue}\centering}
+  {\chaptertitlename\ \thechapter}{20pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{50pt}{40pt}
+
+%% ── En-têtes / pieds ───────────────────────────────────────
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\thepage}
+\lhead{\leftmark}
+\renewcommand{\headrulewidth}{0.4pt}
+
+%% ── Métadonnées du projet ──────────────────────────────────
+\newcommand{\titrePFE}{Conception d'une couche d'agents IA intelligents
+  avec Retrieval-Augmented Generation (RAG) et le Model Context Protocol (MCP)
+  pour la plateforme éducative SprintUp}
+\newcommand{\auteur}{Wajih Zouinkhi \& Hamdi Soudani}
+\newcommand{\encadrant}{Fathi Mguis}
+\newcommand{\coencadrant}{Amine Lamine}
+\newcommand{\universite}{Université de Gabès}
+\newcommand{\etablissement}{Faculté des Sciences de Gabès}
+\newcommand{\departement}{Département Informatique}
+\newcommand{\master}{Master Professionnel en Cybersécurité}
+\newcommand{\annee}{2025--2026}
+\newcommand{\societe}{SprintUp / Intellect Education}
+\newcommand{\ville}{Gabès}
+
+%% ============================================================
+\begin{document}
+\selectlanguage{french}
+
+%% ── Page de garde ──────────────────────────────────────────
+\input{frontmatter/cover}
+
+%% ── Pages liminaires (numérotation romaine) ────────────────
+\pagenumbering{roman}
+\setcounter{page}{1}
+\pagestyle{plain}
+
+\input{frontmatter/dedication}
+\input{frontmatter/acknowledgements}
+\input{frontmatter/abstract_fr}
+\input{frontmatter/abstract_en}
+
+%% ── Tables ─────────────────────────────────────────────────
+\tableofcontents   \newpage
+\listoffigures     \addcontentsline{toc}{chapter}{Liste des figures}   \newpage
+\listoftables      \addcontentsline{toc}{chapter}{Liste des tableaux}  \newpage
+\printglossary[type=\acronymtype, title=Liste des abréviations]        \newpage
+
+%% ── Corps du rapport (numérotation arabe) ──────────────────
+\pagenumbering{arabic}
+\setcounter{page}{1}
+\pagestyle{fancy}
+
+%% Introduction (chapitre non numéroté)
+\input{chapters/chapter0}
+
+%% Chapitre 1 — Orchestration d'agents & MCP
+\input{chapters/chapter1}
+
+%% Chapitre 2 — Conception de la couche d'agents
+\input{chapters/chapter2}
+
+%% Conclusion générale
+\input{frontmatter/conclusion}
+
+%% ── Bibliographie ──────────────────────────────────────────
+\printbibliography[heading=bibintoc, title={Références bibliographiques}]
+
+\end{document}

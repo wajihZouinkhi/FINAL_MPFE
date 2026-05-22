@@ -1,0 +1,34 @@
+%% ============================================================
+%%  RÉSUMÉ (Français)
+%% ============================================================
+\chapter*{Résumé}
+\thispagestyle{plain}
+\addcontentsline{toc}{chapter}{Résumé}
+
+\noindent
+Ce Projet de Master Professionnel présente la conception logique d'une couche
+d'agents \gls{ia} destinée à la plateforme éducative SprintUp. Le travail livre
+une architecture indépendante de toute pile technique particulière, que la
+plateforme cible pourra ensuite implémenter sur sa propre infrastructure.
+
+L'objet du document se concentre sur deux contributions de fond. La première
+est un \textbf{mécanisme d'indexation} des activités existantes, qui permet à
+un agent de vérifier qu'une activité similaire n'a pas déjà été produite avant
+d'en générer une nouvelle. La seconde est la conception d'un \textbf{serveur
+\gls{mcp}} qui expose les opérations de lecture et d'écriture du syllabus sous
+la forme d'un catalogue d'outils typés, et la définition d'un \textbf{catalogue
+d'agents} consommateurs de ce serveur, chacun restreint par une liste blanche
+d'outils qui matérialise le principe du moindre privilège.
+
+Le document s'organise en deux chapitres. Une introduction situe le projet
+dans son contexte. Le chapitre~1 présente les motifs d'orchestration d'agents,
+l'augmentation par recherche et le Model Context Protocol. Le chapitre~2
+détaille la conception~: indexation vectorielle des activités, protocole
+\gls{mcp} appliqué au système et catalogue des agents retenus. Une conclusion
+générale clôt le document.
+
+\vspace{0.5cm}
+\noindent
+\textbf{Mots-clés~:} IA générative, Model Context Protocol, indexation
+sémantique, agents conversationnels, EdTech.
+\newpage

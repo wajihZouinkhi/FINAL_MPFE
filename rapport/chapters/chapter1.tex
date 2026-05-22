@@ -1,0 +1,440 @@
+%% ============================================================
+%%  CHAPITRE 1 — Introduction à l'orchestration d'agents
+%%               et au Model Context Protocol
+%% ============================================================
+\chapter{Introduction à l'orchestration d'agents et au Model Context Protocol}
+
+Dans la continuité de la vue d'ensemble présentée en introduction, ce chapitre établit
+les fondements théoriques et techniques nécessaires à la couche d'IA proposée. Nous
+commençons par clarifier ce que signifie l'orchestration d'agents dans les systèmes
+modernes d'IA générative, explorons les principaux schémas d'architecture actuellement
+utilisés, puis nous concentrons sur le Model Context Protocol, l'innovation clé qui
+rend praticable et passable à l'échelle l'intégration fiable avec des services backend existants.
+La discussion s'approfondit ensuite sur des mécanismes d'orchestration concrets, en
+particulier le schéma de superviseur LangGraph, et sur une vue détaillée de la
+conception protocolaire et des propriétés de sécurité de MCP. Enfin, nous introduisons
+le paradigme émergent de RAG agentique et passons en revue l'état de l'art des
+applications en éducation afin de montrer comment ces concepts alimentent directement
+notre implémentation SprintUp.
+
+%% ────────────────────────────────────────────────────────────
+\section{Comprendre l'orchestration d'agents}
+
+Fondamentalement, un agent IA est plus qu'un simple chatbot. C'est un système autonome
+qui perçoit son environnement (via les requêtes utilisateur ou les données récupérées),
+raisonne sur des objectifs, sélectionne les outils ou actions appropriés et les exécute
+en séquence ou en parallèle jusqu'à l'atteinte de l'objectif. Lorsque plusieurs agents
+ou outils doivent collaborer, ce qui est inévitable pour traiter des demandes
+éducatives complexes, l'orchestration devient essentielle. L'orchestration désigne la
+logique de contrôle qui coordonne le flux d'information, délègue les sous-tâches, gère
+l'état et garantit la cohérence des résultats finaux. Sans orchestration appropriée, les
+agents risquent de boucler indéfiniment, d'entreprendre des actions contradictoires ou
+d'utiliser les ressources de façon inefficace.
+
+\subsection{Évolution des schémas d'orchestration}
+
+L'orchestration d'agents a évolué rapidement depuis les premiers systèmes
+d'enchaînement de prompts (\emph{prompt chaining}) en 2022--2023. Les systèmes initiaux reposaient sur
+des pipelines linéaires. À partir de 2024, des schémas parallèles et hiérarchiques
+sont apparus, poussés par la nécessité de fiabilité en production. En 2025--2026, les
+environnements d'exécution basés sur des graphes sont devenus le paradigme dominant,
+permettant des branchements conditionnels, un état persistant, de l'intervention
+humaine dans la boucle et une replanification dynamique. Cette évolution répond
+directement aux limites observées dans les premiers systèmes agentiques, notamment
+dans les contextes éducatifs où les tâches impliquent de multiples services backend
+et des données étudiantes en temps réel~\cite{anthropicagents,langgraphdocs}.
+
+\subsection{Comparaison des principaux cadres d'agents}
+
+Plusieurs frameworks dominent désormais l'écosystème. Le tableau ci-dessous résume
+les différences clés pertinentes pour notre implémentation SprintUp :
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=1.0\textwidth]{generated-image.png}
+  \caption{Comparaison des principaux frameworks d'agents IA (2025--2026)}
+  \label{fig:frameworks-comparison}
+\end{figure}
+
+\subsection{LangGraph et environnement d'exécution basé sur des graphes}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.32\textwidth]{logo-langraph.png}
+  \caption{Logo officiel de LangGraph.}
+  \label{fig:langgraph-logo}
+\end{figure}
+
+LangGraph (au sein de l'écosystème LangChain) illustre l'orchestration moderne. Il
+représente les workflows sous forme de graphes orientés où les nœuds sont des agents
+ou des outils et les arêtes définissent le routage conditionnel. Un état persistant et
+des points de contrôle avec intervention humaine garantissent la fiabilité, un aspect
+critique lors de l'intégration de données étudiantes sensibles~\cite{langgraphdocs}.
+Dans notre couche SprintUp, nous tirerons parti du schéma de superviseur de LangGraph
+combiné à l'exposition d'outils via MCP.
+
+Trois principaux schémas d'orchestration dominent la pratique actuelle et sont bien
+pris en charge par des cadres comme LangGraph. La figure~\ref{fig:sequential} présente
+le premier schéma.
+
+%% ── Schéma 1 : Séquentiel ───────────────────────────────────
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node/.style={rectangle, rounded corners=6pt, draw, thick,
+      minimum width=2.7cm, minimum height=0.8cm, align=center},
+    arrow/.style={->, thick, -{Stealth[length=3mm]}}
+]
+\node[node, fill=gray!10, font=\bfseries] (title) {Sequential};
+\node[node, below=0.8cm of title]  (q)  {User Query};
+\node[node, below=0.65cm of q]     (s1) {Step 1};
+\node[node, below=0.65cm of s1]    (s2) {Step 2};
+\node[node, below=0.65cm of s2]    (s3) {Step 3};
+\node[node, below=0.65cm of s3]    (f)  {Final Answer};
+\draw[arrow] (q) -- (s1);
+\draw[arrow] (s1) -- (s2);
+\draw[arrow] (s2) -- (s3);
+\draw[arrow] (s3) -- (f);
+\end{tikzpicture}
+\caption{Schéma séquentiel d'orchestration}
+\label{fig:sequential}
+\end{figure}
+
+Sequential orchestration organise les tâches dans une chaîne linéaire. Chaque étape
+attend la fin de la précédente avant de transmettre sa sortie. Ce schéma convient bien
+à des flux de travail clairement définis, comme \og{}récupérer l'emploi du temps du
+cours $\rightarrow$ extraire les notes du chapitre concerné $\rightarrow$ générer des
+exercices supplémentaires\fg{}. Sa simplicité facilite le débogage, mais il peut
+devenir un goulot d'étranglement lorsque des sous-tâches pourraient s'exécuter
+indépendamment.
+
+%% ── Schéma 2 : Parallèle ────────────────────────────────────
+La figure~\ref{fig:parallel} présente le deuxième schéma.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node/.style={rectangle, rounded corners=6pt, draw, thick,
+      minimum width=2.7cm, minimum height=0.8cm, align=center},
+    arrow/.style={->, thick, -{Stealth[length=3mm]}}
+]
+\node[node, fill=gray!10, font=\bfseries]     (title) {Parallel};
+\node[node, below=0.55cm of title]            (q)   {User Query};
+\node[node, below=0.55cm of q]                (s)   {Splitter};
+\node[node, below left=0.7cm and 0.3cm of s]  (a)   {Agent 1};
+\node[node, below right=0.7cm and 0.3cm of s] (b)   {Agent 2};
+\node[node, below=2.9cm of s]                 (m)   {Merge};
+\node[node, below=0.55cm of m]                (f)   {Final Answer};
+\draw[arrow] (q) -- (s);
+\draw[arrow] (s) -- (a);
+\draw[arrow] (s) -- (b);
+\draw[arrow] (a) -- (m);
+\draw[arrow] (b) -- (m);
+\draw[arrow] (m) -- (f);
+\end{tikzpicture}
+\caption{Schéma parallèle d'orchestration}
+\label{fig:parallel}
+\end{figure}
+
+Parallel (ou simultaneous) orchestration permet à plusieurs agents ou outils de
+s'exécuter en même temps. Une requête peut lancer séparément la récupération de
+l'emploi du temps du jour, la recherche de ressources multimédias et la rédaction
+d'un résumé ; les résultats sont ensuite fusionnés par une étape de combinaison.
+Cette approche améliore la rapidité et convient particulièrement aux contextes
+éducatifs où les enseignants ont besoin d'un support rapide et multiple. La difficulté
+principale réside dans la résolution des conflits et la synchronisation de l'état.
+
+%% ── Schéma 3 : Supervisé ────────────────────────────────────
+La figure~\ref{fig:supervised} présente le troisième schéma.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node/.style={rectangle, rounded corners=6pt, draw, thick,
+      minimum width=2.7cm, minimum height=0.8cm, align=center},
+    arrow/.style={->, thick, -{Stealth[length=3mm]}}
+]
+\node[node, fill=gray!10, font=\bfseries] (title) {Supervised};
+\node[node, below=0.8cm of title]                (q)   {User Query};
+\node[node, below=0.9cm of q]                    (sup) {Supervisor};
+\node[node, below left=1.05cm and -1.0cm of sup] (sp1) {Specialist 1};
+\node[node, below right=1.05cm and -1.0cm of sup](sp2) {Specialist 2};
+\node[node, below=2.2cm of sup]                  (f)   {Final Answer};
+\draw[arrow] (q)   -- (sup);
+\draw[arrow] (sup) -- (sp1);
+\draw[arrow] (sup) -- (sp2);
+\draw[arrow] (sp1) -- (sup);
+\draw[arrow] (sp2) -- (sup);
+\draw[arrow] (sup) -- (f);
+\end{tikzpicture}
+\caption{Schéma supervisé (hiérarchique) d'orchestration}
+\label{fig:supervised}
+\end{figure}
+
+Supervised (ou hierarchical/orchestrator-worker) orchestration introduit un agent
+superviseur central qui agit comme routeur et contrôleur de qualité. Le superviseur
+analyse la requête utilisateur, décide quels agents spécialisés appeler, surveille
+l'avancement, puis synthétise la réponse finale. Ce schéma, bien implémenté dans les
+graphes superviseur de LangGraph, reflète la gestion d'une équipe humaine et offre
+de bons mécanismes de gestion d'erreur et de repli. C'est le schéma que nous
+privilégierons dans notre couche SprintUp, car il équilibre flexibilité et contrôle,
+ce qui est essentiel pour une intégration avec des services backend en production.
+
+LangGraph montre comment ces schémas peuvent coexister dans un même runtime basé sur
+des graphes. Les nœuds représentent des agents ou des outils, les arêtes définissent
+le flux de données et le routage conditionnel, et l'état persistant avec points de
+contrôle humains assure la fiabilité. Ces cadres ont fait évoluer le développement
+d'agents, passant de chaînes de prompts fragiles à des workflows testables et de
+niveau production.
+
+\subsection{Approfondissement du schéma de superviseur LangGraph}
+
+Les environnements d'exécution basés sur des graphes comme LangGraph fournissent non
+seulement des schémas abstraits, mais aussi des mécanismes concrets pour construire
+des systèmes multi-agents robustes. Dans une configuration typique de superviseur, un
+nœud contrôleur de haut niveau reçoit la requête utilisateur, inspecte l'état courant
+et décide quels agents spécialistes ou outils invoquer
+ensuite~\cite{langgraphsupervisor,langgraphdocs}. Ces spécialistes peuvent inclure par
+exemple un agent \og{}cours\fg{}, un agent \og{}notes\fg{} ou un générateur
+d'exercices, chacun responsable d'une capacité restreinte alignée sur un service backend
+spécifique.
+
+Le modèle de graphe d'état de LangGraph permet au superviseur de maintenir une mémoire
+structurée des résultats intermédiaires, des sorties d'outils et des signaux d'erreur,
+ce qui facilite la replanification lorsqu'un outil échoue ou que des informations
+supplémentaires sont nécessaires~\cite{ibmlanggraph}. Les mécanismes de checkpointing et
+les contrôles avec humain dans la boucle, désormais standards dans les versions modernes
+de LangGraph, jouent un rôle clé dans les scénarios éducatifs où des interventions
+d'enseignants ou d'administrateurs peuvent être requises avant l'exécution d'actions
+sensibles sur les données étudiantes~\cite{anthropicagents}. Cette combinaison de
+routage supervisé, d'état persistant et de points de contrôle explicites constituera
+l'ossature de la couche d'orchestration SprintUp.
+
+%% ────────────────────────────────────────────────────────────
+\section{Le Model Context Protocol (MCP) : définition, origines et justification}
+
+Tandis que l'orchestration gouverne le flux de haut niveau, le Model Context Protocol
+traite la question plus bas niveau de la communication des agents avec les systèmes
+externes. Annoncé par Anthropic en novembre 2024 puis étendu via des mises à jour de
+spécification ouvertes, MCP est un protocole ouvert et standardisé qui fonctionne
+comme un \og{}port USB-C de l'IA\fg{}~\cite{anthropic2024,anthropicmcpdocs}.
+
+Il définit une architecture client--serveur cohérente. Côté client,
+un composant MCP intégré dans l'environnement d'exécution de l'agent
+charge les descriptions d'outils et leurs capacités dans la fenêtre
+de contexte du modèle. Le modèle décide alors quels outils appeler
+et émet des requêtes structurées. Côté serveur, des serveurs MCP
+exposent les services backend (bases de données, API, systèmes de
+fichiers, fonctions métier) de façon uniforme via JSON-RPC sur des
+canaux sécurisés. La spécification 2025 définit deux transports
+principaux : \texttt{stdio} pour les intégrations locales et
+\textbf{Streamable HTTP} (successeur du transport SSE initial) pour
+les déploiements réseau ; ce dernier permet des requêtes HTTP POST
+stateless avec réponses JSON directes, facilitant le passage à
+l'échelle derrière un load balancer. Les résultats transitent par
+le même protocole, ce qui autorise des interactions multi-tours
+fluides.
+
+À la différence des mécanismes traditionnels d'appel de fonctions
+(\emph{function calling}) qui exigent du code de liaison spécifique pour
+chaque nouveau service, MCP découple l'agent des
+détails d'implémentation. Les développeurs implémentent le serveur MCP une seule fois
+pour leur backend (dans notre cas, les endpoints de services étudiants pour les cours,
+notes, génération de contenu, etc.), et tout agent conforme peut ensuite découvrir et
+utiliser immédiatement ces outils. MCP a précisément été conçu pour résoudre la
+fragmentation qui pénalisait les premiers développements d'agents : avant 2024, chaque
+entreprise devait écrire des intégrations sur mesure pour chaque base de données, API
+ou outil, un cauchemar de maintenance qui passait mal à l'échelle et introduisait des
+incohérences de sécurité~\cite{anthropic2024,mcpspec}. D'un point de vue
+cybersécurité, au cœur de ce programme, les hooks d'authentification intégrés au
+protocole, les périmètres d'autorisation et le format de messages propice à l'audit
+représentent une avancée majeure par rapport aux solutions \emph{ad hoc}
+d'appel de fonctions~\cite{mcpsecurity}.
+
+MCP ne remplace pas la récupération d'information ; il la complète. La recherche
+agentique sur sources externes excelle dans la collecte de connaissances
+actualisées pour ancrer le contenu généré dans des sources fiables. MCP permet à
+l'agent d'agir sur ces connaissances en appelant des services applicatifs en temps réel.
+Dans le contexte SprintUp, la rédaction d'une activité déclenche d'abord la
+collecte du contexte pédagogique pertinent par recherche externe, puis les
+outils \gls{mcp} de création et de mise à jour pour persister le contenu dans
+la base de connaissances.
+
+\subsection{Architecture détaillée et flux protocolaire}
+
+MCP définit une architecture client--serveur basée sur JSON-RPC via des événements
+envoyés par le serveur. Le client MCP (intégré dans l'exécution de l'agent) charge les
+descriptions d'outils dans la fenêtre de contexte du modèle et les expose sous forme
+de définitions structurées que le modèle peut appeler~\cite{anthropicmcpdocs,mcpspec}.
+Quand le modèle décide d'invoquer un outil, il émet une requête JSON-RPC :
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!50, arc=3pt,
+    title={\small Exemple de requ\^{e}te JSON-RPC MCP}]
+\small\ttfamily
+\{``jsonrpc'': ``2.0'', ``method'': ``tools/call'',\\
+\ ``params'': \{``name'': ``create\_activity'',\\
+\quad``arguments'': \{``unit\_id'': ``u-01'',\\
+\qquad``title'': ``Les bases de données relationnelles''\}\}\}
+\end{tcolorbox}
+
+Le serveur MCP reçoit la requête, exécute la logique backend correspondante
+et renvoie une réponse structurée :
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!50, arc=3pt,
+    title={\small Exemple de r\'{e}ponse JSON-RPC MCP}]
+\small\ttfamily
+\{``jsonrpc'': ``2.0'', ``id'': 1,\\
+\ ``result'': \{``id'': ``a-42'',\\
+\quad``title'': ``Les bases de données relationnelles'',\\
+\quad``position'': 0, ``status'': ``created''\}\}
+\end{tcolorbox}
+
+Le transport \textbf{\emph{Streamable HTTP}} se prête naturellement à un mode
+sans état dans lequel chaque appel \gls{rpc} est auto-contenu et n'oblige pas
+le serveur à mémoriser une session de
+client~\cite{anthropicmcpdocs}. La figure~\ref{fig:mcp-architecture} illustre
+cette architecture de haut niveau.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node/.style={rectangle, rounded corners=6pt, draw, thick,
+      minimum width=3.5cm, minimum height=1cm, align=center},
+    arrow/.style={->, thick, -{Stealth[length=3mm]}}
+]
+\node[node] (model)  {Agent LLM};
+\node[node, below=1.5cm of model]  (client) {Client MCP};
+\node[node, below=1.5cm of client] (server) {Serveur MCP (Backend)};
+\draw[arrow] (model)  -- node[midway,right] {Appel d'outil} (client);
+\draw[arrow] (client) -- node[midway,right] {JSON-RPC}      (server);
+\draw[arrow] (server) -- node[midway,left]  {Réponse}       (client);
+\draw[arrow] (client) -- node[midway,left]  {Résultat}      (model);
+\end{tikzpicture}
+\caption{Architecture client--serveur MCP (spécification 2025)}
+\label{fig:mcp-architecture}
+\end{figure}
+
+Du point de vue de l'implémentation, la spécification MCP et les implémentations de
+référence dans des langages courants (Python, TypeScript) fournissent une cartographie
+claire entre les capacités côté serveur et les schémas d'outils visibles dans le
+contexte du modèle~\cite{anthropicmcpdocs}. Cela réduit la complexité accidentelle et
+facilite la compréhension des opérations qu'un agent est autorisé à effectuer dans un
+déploiement éducatif donné.
+
+\subsection{Fonctionnalités de sécurité et risques}
+
+Sur le plan de la cybersécurité, MCP présente plusieurs avantages par rapport aux
+schémas informels d'appel de fonctions. Tout d'abord, il encourage une définition
+explicite des outils disponibles et de leurs paramètres, ce qui s'aligne sur le
+principe du moindre privilège : un agent interagissant avec SprintUp peut n'avoir
+accès qu'à des méthodes de consultation de cours en lecture seule pour les profils
+étudiants, tandis que les agents enseignants bénéficient de capacités d'écriture plus
+larges~\cite{mcpsecurity}. Ensuite, les messages JSON-RPC structurés constituent une
+piste d'audit naturelle pouvant être journalisée et surveillée pour détecter des
+comportements suspects.
+
+Des risques subsistent néanmoins. Des attaquants pourraient tenter d'enregistrer des
+serveurs MCP malveillants exposant des outils conçus pour exfiltrer des données ou
+injecter du contenu adversarial dans le contexte de l'agent. Des attaques par injection
+de prompt ou empoisonnement de données peuvent également survenir via les réponses
+d'outils si celles-ci ne sont pas correctement filtrées~\cite{mcpsecurity}.
+Plusieurs mesures de mitigation sont recommandées. La première
+consiste à exiger une authentification et une autorisation strictes
+des serveurs MCP avant leur mise à disposition de l'agent. La
+deuxième repose sur des périmètres fins et un contrôle d'accès basé
+sur les rôles (\acrshort{rbac}) définissant les outils qu'un profil
+d'utilisateur peut invoquer. La troisième impose la validation des
+entrées et des sorties de tous les appels d'outils, avec filtrage
+du contenu non fiable avant qu'il n'atteigne le modèle. La
+quatrième, enfin, repose sur une journalisation exhaustive et une
+détection d'anomalies sur le trafic MCP, en particulier pour les
+opérations impliquant des données personnelles d'étudiants.
+
+Dans l'implémentation SprintUp, ces mesures seront intégrées aux contrôles de sécurité
+existants et aux politiques de protection des données.
+
+%% ────────────────────────────────────────────────────────────
+\section{État de l'art : applications en éducation}
+
+La combinaison de l'orchestration, de la Retrieval-Augmented Generation (RAG) et
+d'intégrations de type MCP a déjà donné lieu à des résultats convaincants dans des
+environnements éducatifs à travers le monde. L'Arizona State University (ASU), par
+exemple, a lancé en 2024 un important \og{}AI Innovation Challenge\fg{} ayant attiré
+plus de 175 propositions et financé plus de 200 projets couvrant la majorité de ses
+unités académiques~\cite{asu2024}. Ces initiatives incluent des agents de tutorat
+personnalisé et des outils de simulation combinant RAG pour la récupération de
+connaissances et des mécanismes d'orchestration pour fournir des expériences
+d'apprentissage adaptatives.
+
+De la même façon, des prototypes basés sur RAG ont montré de bonnes performances dans
+les environnements universitaires. Une revue systématique récente sur RAG pour les
+applications éducatives met en évidence la façon dont les modèles augmentés par la
+récupération peuvent alimenter des systèmes d'apprentissage interactifs, la génération
+de contenu et l'évaluation automatisée, tout en réduisant les hallucinations par rapport
+aux modèles purement génératifs~\cite{rageducation,lirageducation}.
+
+Un exemple particulièrement pertinent pour ce projet est l'expérience d'Intellect
+Academy en Tunisie, qui opère via la plateforme SprintUp sur plusieurs campus et
+filières de formation~\cite{intellect2025}. En intégrant l'IA pour le développement de
+curricula, les parcours d'apprentissage adaptatifs et le pilotage unifié de la
+performance, l'académie a accéléré la création de contenu tout en préservant une forte
+maîtrise pédagogique.
+
+L'Université Northeastern a, elle, noué un partenariat avec Anthropic pour déployer des
+agents basés sur Claude sur ses campus pour le tutorat personnalisé et le support
+administratif~\cite{northeastern2025,duke2025}. Ces initiatives illustrent une tendance
+plus large en 2025--2026 : l'émergence d'universités \og{}IA natives\fg{} où des
+systèmes agentiques soutiennent le conseil, le tutorat et les workflows d'alerte
+précoce à grande échelle~\cite{agenticragsurvey,agenticrag2025}.
+
+\subsection{RAG agentique pour l'apprentissage personnalisé}
+
+Les pipelines classiques de Retrieval-Augmented Generation (RAG) récupèrent un ensemble
+statique de documents à partir de la requête utilisateur, puis génèrent une réponse en
+un seul passage. Si cela améliore l'ancrage factuel, ces workflows peuvent rencontrer
+des difficultés pour le raisonnement multi-étapes, les questions ambiguës ou les tâches
+nécessitant une exploration adaptative de la base de
+connaissances~\cite{lewis2020,rageducation}. Le RAG agentique étend ce paradigme en
+intégrant des agents autonomes dans la chaîne RAG. Ces agents s'appuient sur des
+schémas de conception tels que la planification, la réflexion, l'utilisation d'outils
+et la collaboration multi-agents pour piloter dynamiquement les stratégies de
+récupération, affiner itérativement le contexte et adapter les
+workflows~\cite{agenticragsurvey}.
+
+Dans des scénarios d'apprentissage personnalisé, un système de RAG
+agentique peut ainsi planifier une séquence de récupérations à
+partir de notes de cours, de chapitres de manuels et d'anciens
+sujets d'examen, puis réfléchir à la suffisance du contexte
+récupéré et émettre des requêtes complémentaires en cas de lacunes.
+Il peut également utiliser des outils pour parcourir des graphes
+de connaissances ou interroger un modèle de l'étudiant afin
+d'adapter les explications à son niveau actuel.
+
+La revue consacrée à RAG pour les applications éducatives met spécifiquement en avant
+quatre grands schémas d'application : systèmes de questions--réponses éducatifs,
+chatbots pédagogiques, systèmes de tutorat pilotés par IA et parcours d'apprentissage
+adaptatifs~\cite{rageducation,lirageducation}. Chacun de ces schémas s'aligne
+étroitement avec les services backend existants de SprintUp.
+
+%% ────────────────────────────────────────────────────────────
+\section{Conclusion du chapitre}
+
+Ce chapitre a posé les bases conceptuelles : l'orchestration fournit l'intelligence de
+coordination des tâches complexes, tandis que MCP apporte la plomberie standardisée et
+sécurisée qui connecte les agents aux systèmes backend réels. Combinées à RAG (détaillé
+dans les chapitres suivants), ces technologies constituent la pile complète nécessaire
+pour concrétiser notre vision pour SprintUp. Les schémas et les protocoles présentés ici
+ne sont pas théoriques ; ils adressent directement le déficit d'intégration mis en
+évidence en introduction et orienteront chacune des décisions de conception à venir.
+
+\subsection{Synthèse et lien avec SprintUp}
+
+Le schéma d'orchestration supervisée, combiné à l'exposition d'outils via MCP et à
+l'ancrage par RAG, s'ajuste naturellement aux services backend de SprintUp. L'analyse de
+la sécurité de MCP et de l'orchestration d'agents présentée dans ce chapitre fournit un
+socle pour concevoir une couche d'agents conformes et auditables, respectant la vie
+privée des étudiants et les contraintes institutionnelles. Forts de ces fondations, nous
+pouvons désormais passer à l'implémentation concrète de la récupération d'information,
+de l'exposition des outils via MCP et de la logique d'orchestration dans les chapitres
+de mise en \oe{}uvre qui suivent.
+\newpage

@@ -1,0 +1,148 @@
+%% ============================================================
+%%  CONCLUSION GÉNÉRALE ET PERSPECTIVES
+%% ============================================================
+\chapter*{Conclusion générale et perspectives}
+\thispagestyle{plain}
+\addcontentsline{toc}{chapter}{Conclusion générale et perspectives}
+\markboth{Conclusion générale}{Conclusion générale}
+
+\section*{Bilan du travail}
+
+Ce projet de fin d'études avait pour objectif de remplacer
+l'approche mono-modèle de génération de curricula par une
+\textbf{famille d'agents spécialisés} reliés à une base de
+connaissances pédagogique partagée à travers le Model Context
+Protocol. Le présent rapport se concentre sur la
+\textbf{conception logique} de cette famille d'agents et du
+serveur qui les relie, indépendamment de toute pile technique
+particulière. La coordination des agents par un orchestrateur
+ainsi que l'analyse de sécurité associée constituent des
+prolongements naturels de cette conception, qui seront traités
+dans des versions ultérieures du présent document.
+
+Le travail s'organise autour de trois apports complémentaires.
+Le premier est un \textbf{mécanisme d'indexation} des activités
+pédagogiques, qui permet à un agent de consulter ce qui existe
+déjà avant de produire du contenu nouveau. Le deuxième est un
+\textbf{serveur \gls{mcp}} qui expose ces données et les
+opérations associées sous la forme d'un catalogue d'outils
+typés, indépendamment de la nature des clients qui les
+consomment. Le troisième est un \textbf{catalogue d'agents} décrivant les
+rôles retenus pour cette première version, aux responsabilités
+distinctes et dont les privilèges sont restreints au strict
+nécessaire par une liste blanche d'outils \gls{mcp}.
+
+\section*{Apports du projet}
+
+Les contributions principales de ce travail sont les suivantes.
+
+\textbf{Une architecture orientée qualité.} Le déplacement du
+travail d'un seul modèle vers une famille d'agents spécialisés a
+été guidé par un objectif explicite, à savoir améliorer la
+qualité du contenu produit, et non en accélérer la production.
+La conception privilégie systématiquement l'ancrage des sorties
+sur des données existantes, la séparation des privilèges et la
+révision avant publication.
+
+\textbf{Une indexation pensée pour la non-redondance.} Le
+mécanisme d'indexation par plongement vectoriel n'est pas un
+ajout périphérique mais un composant de premier plan : il
+conditionne le comportement de l'agent générateur d'activités
+avec \gls{mcp}, qui consulte la base avant toute production. La
+représentation sémantique des activités et la recherche par
+similarité s'enchaînent pour faire de la non-redondance une
+propriété mesurable du système.
+
+\textbf{Un protocole MCP en pratique.} L'usage du \gls{mcp}
+permet de faire coexister, autour d'un même serveur, des agents
+aux profils très différents, sans dupliquer la logique d'accès
+aux données ni partager d'invite système. La discipline du contrat protocolaire
+facilite l'évolution future : ajouter un agent supplémentaire,
+par exemple l'assistant administrateur mentionné en perspective,
+ne demandera aucune modification du serveur ni des agents
+existants.
+
+\textbf{Une méthodologie d'évaluation centrée sur la qualité.}
+La méthodologie de tests décrite au chapitre 2, partie 4,
+substitue aux mesures classiques de latence et de débit des
+mesures plus exigeantes : couverture des objectifs pédagogiques,
+progression interne des activités, justesse factuelle et
+non-redondance par rapport à la base. Elle accepte explicitement
+qu'un pipeline plus exigeant en qualité soit également plus
+exigeant en temps de calcul.
+
+\section*{Limites}
+
+Plusieurs limites du présent travail méritent d'être signalées.
+
+D'abord, l'\textbf{assistant administrateur}, mentionné en
+perspective, n'est pas inclus dans la présente version. Sa
+conception reprendra les principes des agents en lecture seule
+(tuteur et assistant élève) mais étendus à des opérations de
+supervision sur l'ensemble du curriculum.
+
+Ensuite, le \textbf{choix définitif du modèle d'embedding} reste
+ouvert au moment de la rédaction. Les compromis entre modèle
+externe à \gls{api} et modèle local exécuté en interne ont été
+documentés au chapitre 2, mais l'arbitrage final dépendra de
+mesures de coût et de qualité à effectuer sur l'infrastructure
+définitive.
+
+Enfin, les \textbf{chiffres de qualité} produits par la
+méthodologie de tests ne sont pas reportés dans la présente
+version du document. Ils seront produits lors d'une phase
+d'évaluation dédiée et viendront compléter une version
+ultérieure du rapport.
+
+\section*{Perspectives}
+
+Plusieurs directions s'ouvrent pour la suite du travail.
+
+La première concerne la \textbf{conception de l'orchestrateur},
+qui prendra en charge la coordination des agents au moment de
+l'exécution. L'algorithme de routage, le compteur de tours et le
+critère d'arrêt qui décident, à chaque tour de conversation,
+quel agent doit prendre la parole feront l'objet d'un travail
+dédié, à mener une fois la conception logique du présent
+document validée.
+
+La deuxième concerne l'\textbf{ajout d'un agent supplémentaire},
+l'assistant administrateur, dont la fonction de supervision
+globale du curriculum complétera la famille existante. Sa
+conception suit celle des agents en lecture seule (tuteur et
+assistant élève) mais étendue à des opérations transversales :
+détection d'activités obsolètes, statistiques de couverture des
+objectifs, diagnostic d'incohérences entre unités.
+
+La troisième concerne l'\textbf{évolution du modèle
+d'embedding}. Le modèle initial sera choisi pour son coût et sa
+simplicité, mais un modèle multilingue de plus haute dimension
+pourrait être justifié si le volume d'activités croît
+significativement, ou si la qualité du regroupement sémantique
+devenait limitante en phase d'évaluation.
+
+La quatrième concerne la \textbf{personnalisation des agents par
+domaine}. Les fiches d'agent du chapitre 2 sont génériques. Une
+spécialisation par discipline (mathématiques, sciences, langues)
+permettrait de raffiner les rubriques d'évaluation qualitative
+et les heuristiques d'ancrage propres à chaque discipline.
+
+La cinquième et dernière concerne l'\textbf{analyse de sécurité}
+appliquée à l'ensemble. Au-delà des risques classiques d'une
+architecture web, les systèmes agentiques introduisent des
+vecteurs propres (injection par contenu indexé, empoisonnement
+de l'index, exfiltration par recherche) qui méritent une étude
+approfondie une fois l'architecture logique validée.
+
+\vspace{1cm}
+En conclusion, ce projet montre qu'une famille d'agents
+spécialisés, reliés par un contrat protocolaire standardisé et
+disposant d'un mécanisme d'indexation commun, constitue une
+réponse architecturale cohérente au problème de la génération
+pédagogique. La valeur de cette architecture se mesure d'abord à
+la qualité du contenu produit, à sa cohérence avec ce qui existe
+déjà, et à sa résistance aux entrées adversariales. Les chiffres
+qui supporteront cette affirmation seront produits par la
+méthodologie d'évaluation décrite au chapitre 2 et figureront
+dans une version ultérieure de ce document.
+\newpage

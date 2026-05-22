@@ -1,0 +1,196 @@
+%% ============================================================
+%%  INTRODUCTION (chapitre non numéroté)
+%% ============================================================
+\chapter*{Introduction}
+\addcontentsline{toc}{chapter}{Introduction}
+\markboth{INTRODUCTION}{INTRODUCTION}
+
+À une époque où la technologie reconfigure chaque aspect de l'apprentissage
+et du travail, l'intelligence artificielle générative s'impose comme l'une des
+forces les plus transformatrices de notre temps. Ce qui a commencé par des
+systèmes expérimentaux capables de produire des textes ou des images simples a
+évolué vers des outils sophistiqués capables de créer du contenu, de raisonner
+sur des problèmes complexes et d'interagir de manière dynamique avec des systèmes
+du monde réel. Pour un étudiant en master professionnel de cybersécurité, explorer
+l'IA générative ne relève pas d'une simple curiosité académique. Il s'agit d'une
+opportunité concrète pour répondre à des enjeux réels en technologie éducative,
+en particulier dans un contexte d'accélération de la transformation numérique des
+établissements scolaires.
+
+Le parcours de l'IA générative remonte plus loin qu'on ne le pense souvent. Ses
+racines se trouvent dans les premières expériences computationnelles du milieu du
+\textsc{xx}\textsuperscript{e} siècle, lorsque les chercheurs ont commencé à imaginer
+des machines capables d'imiter la créativité humaine. Dès les années 1960, des
+chatbots rudimentaires comme ELIZA ont mis en évidence le potentiel des machines
+à générer des réponses conversationnelles, même si elles s'appuyaient sur une
+simple correspondance de motifs plutôt que sur une véritable compréhension.
+
+La véritable rupture est intervenue dans les années 2010 avec l'essor des techniques
+d'apprentissage profond. En 2014, Ian Goodfellow et ses collègues ont introduit les
+réseaux antagonistes génératifs (GANs), un cadre dans lequel deux réseaux neuronaux
+entrent en compétition pour produire des données de plus en plus réalistes,
+qu'il s'agisse d'images, d'audio ou de texte~\cite{goodfellow2014}. Cette innovation
+a ouvert la voie à la production de contenu synthétique de haute qualité et posé les
+principes fondateurs des modèles ultérieurs.
+
+Le rythme s'est ensuite accéléré avec l'introduction de l'architecture Transformer
+en 2017. L'article \og{}Attention Is All You Need\fg{} d'Ashish Vaswani et de son
+équipe a révolutionné le traitement automatique du langage en remplaçant les réseaux
+récurrents par des mécanismes d'auto-attention capables de traiter les séquences en
+parallèle et de capturer beaucoup plus efficacement les dépendances à longue
+portée~\cite{vaswani2017}. Cette architecture est devenue la colonne vertébrale de
+la série GPT développée par OpenAI. GPT-1 est apparu en 2018, suivi de GPT-2 en 2019
+puis du modèle beaucoup plus volumineux GPT-3 en 2020. Chaque itération a augmenté le
+nombre de paramètres et l'ampleur des données d'entraînement, produisant des sorties
+d'apparence de plus en plus humaine.
+
+L'explosion auprès du grand public a eu lieu en novembre 2022 avec ChatGPT, une
+interface conversationnelle construite sur GPT-3.5 qui a fait entrer l'IA générative
+dans des millions de foyers et de salles de classe du jour au lendemain. Tout à coup,
+n'importe qui pouvait générer des essais, du code, des plans de cours ou des histoires
+créatives à partir d'une simple demande en langage naturel. En 2023 et 2024, le domaine
+a dépassé le cadre des simples chatbots mono-modèle pour s'orienter vers des systèmes
+multimodaux et, surtout, vers l'IA agentique : des systèmes capables de planifier,
+d'utiliser des outils et d'interagir avec des environnements externes. Des modèles
+comme GPT-4o, Claude ou Grok ont intégré des capacités de vision, de voix et de
+raisonnement.
+
+Toutefois, l'augmentation d'échelle seule s'est révélée insuffisante. Les chercheurs
+ont observé des limitations récurrentes : hallucinations factuelles, absence d'accès
+à l'information à jour et difficultés d'interaction fiable avec les systèmes logiciels
+existants. Ces défis ont conduit à l'émergence de techniques complémentaires, comme la
+Retrieval-Augmented Generation (RAG) pour ancrer les réponses dans des données réelles
+et, plus récemment, le Model Context Protocol (MCP). Introduit par Anthropic en novembre
+2024, MCP établit une norme ouverte permettant aux modèles d'IA de découvrir et de
+contacter de manière sécurisée des outils, des bases de données et des services
+externes~\cite{anthropic2024}.
+
+%% ── Figure : frise chronologique ───────────────────────────
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+    timeline/.style={line width=3pt, draw=gray!60},
+    milestone/.style={circle, draw=gray!70, thick, minimum size=11mm,
+      inner sep=2pt, fill=white, font=\small\bfseries},
+    label/.style={align=center, font=\footnotesize}
+]
+\draw[timeline] (0,0) -- (16.5,0);
+\node[milestone] (e1) at (0.8,0)  {1960s};
+\node[label, above=12pt] at (e1)  {ELIZA\\(premier chatbot)};
+\node[milestone] (e2) at (3.8,0)  {2014};
+\node[label, above=12pt] at (e2)  {GANs};
+\node[milestone] (e3) at (6.5,0)  {2017};
+\node[label, above=12pt] at (e3)  {Transformers};
+\node[milestone] (e4) at (9.2,0)  {2020};
+\node[label, above=12pt] at (e4)  {GPT-3};
+\node[milestone] (e5) at (11.8,0) {2022};
+\node[label, above=12pt] at (e5)  {ChatGPT};
+\node[milestone] (e6) at (15.2,0) {2024};
+\node[label, above=12pt] at (e6)  {MCP \&\\IA agentique};
+\draw[-{Stealth[length=3.5mm]}, gray!70, thick] (1.9,0)  -- (3.2,0);
+\draw[-{Stealth[length=3.5mm]}, gray!70, thick] (4.9,0)  -- (6.0,0);
+\draw[-{Stealth[length=3.5mm]}, gray!70, thick] (7.6,0)  -- (8.7,0);
+\draw[-{Stealth[length=3.5mm]}, gray!70, thick] (10.3,0) -- (11.3,0);
+\draw[-{Stealth[length=3.5mm]}, gray!70, thick] (12.9,0) -- (14.7,0);
+\end{tikzpicture}%
+}%
+\caption{Évolution de l'IA générative : jalons clés}
+\label{fig:timeline}
+\end{figure}
+
+%% ────────────────────────────────────────────────────────────
+L'entreprise Intellect Education a développé SprintUp, une plateforme innovante qui
+fonctionne comme un \og{}Shopify de l'éducation\fg{}. Concrètement, SprintUp permet
+aux écoles et aux institutions de générer en quelques minutes des campus numériques
+entièrement fonctionnels : portails étudiants, tableaux de bord enseignants, gestion
+de curriculum, classes en direct et services backend exposant des API REST.
+
+SprintUp intègre déjà une fonctionnalité de génération de syllabus fondée sur un
+appel direct à un modèle de langage unique (LLM). Cependant, cette approche
+mono-modèle présente des limitations significatives en termes de coût, de rapidité
+et de qualité du contenu produit.
+
+\subsection*{Problématique}
+
+L'approche actuelle de génération de curriculum sur SprintUp repose
+sur un \textbf{appel unique} à un \gls{llm} pour produire
+l'ensemble du contenu. Ce fonctionnement souffre de trois
+limitations majeures qui touchent toutes à la \textbf{qualité} du
+contenu produit.
+
+Le premier problème concerne la \textbf{redondance}. Un appel
+mono-modèle produit du contenu nouveau à chaque exécution, sans
+mémoire de ce qui a déjà été produit auparavant. Sur un parcours
+pédagogique constitué au fil de plusieurs sessions, plusieurs
+activités finissent par traiter le même concept sous des angles à
+peine différents, ce qui dilue l'ancrage des objectifs et
+alourdit inutilement la charge cognitive de l'apprenant. Le
+deuxième porte sur l'\textbf{ancrage factuel} : en l'absence de
+mécanisme de contrôle, le contenu produit varie d'un appel à
+l'autre et aucun garde-fou n'empêche les hallucinations, les
+sections manquantes ou les contenus trop superficiels. Le
+troisième est l'\textbf{absence de séparation des privilèges} :
+un même prompt donne accès à toutes les opérations, ce qui rend
+tout usage spécialisé (révision par un tuteur, accompagnement
+d'un apprenant) difficile à isoler et à sécuriser.
+
+\medskip
+\noindent
+La question qui structure ce travail est donc la suivante :
+\emph{comment concevoir une famille d'agents spécialisés,
+intégrés de manière standardisée à une base de connaissances
+pédagogique partagée, qui produit un contenu sans redondance par
+rapport à l'existant et dont chaque agent dispose du périmètre
+d'accès strictement nécessaire à son rôle ?}
+
+L'objectif central de ce projet est de remplacer l'approche
+mono-modèle par une \textbf{famille d'agents spécialisés}, reliés
+entre eux par un orchestrateur dédié et reliés à la base de
+données pédagogique par un serveur Model Context Protocol commun.
+Les agents sont au nombre de cinq dans cette première version :
+un \textbf{générateur d'activités sans \gls{mcp}} qui sert de
+baseline, un \textbf{générateur d'activités avec \gls{mcp} et
+indexation} qui consulte le contenu existant avant d'en produire,
+un \textbf{générateur de syllabus} qui compose ce contenu en
+parcours pédagogiques cohérents, un \textbf{tuteur} qui révise
+les productions d'apprenants et un \textbf{assistant élève} qui
+répond aux questions ancré dans le syllabus suivi. Un sixième
+agent, l'\textbf{assistant administrateur}, est mentionné en
+perspective.
+
+Plus précisément, ce travail poursuit trois objectifs. Le
+premier est la conception d'un \textbf{mécanisme d'indexation}
+des activités existantes, sur lequel les agents générateurs
+s'appuient pour éviter de produire du contenu redondant. Le
+deuxième est la conception d'un \textbf{serveur \gls{mcp}} qui
+expose ces activités et les opérations associées sous la forme
+d'un catalogue d'outils typés, indépendamment de la nature des
+clients qui les consomment. Le troisième est la conception du
+\textbf{catalogue d'agents} décrivant les rôles retenus pour
+cette première version, avec pour chacun une liste blanche
+d'outils \gls{mcp} qui matérialise le principe du moindre
+privilège. La coordination de ces agents par un orchestrateur
+ainsi que l'analyse de sécurité associée constituent des
+prolongements naturels de cette conception, qui seront traités
+dans des versions ultérieures de ce document.
+
+Le document s'organise en deux chapitres. Le chapitre~1 présente
+les cadres d'orchestration d'agents, les techniques
+d'augmentation par recherche et le Model Context Protocol, qui
+constituent les fondations sur lesquelles s'appuie la conception
+du système. Le chapitre~2 détaille cette conception~: indexation
+des activités pédagogiques, protocole \gls{mcp} appliqué au
+système et catalogue des agents retenus pour cette première
+version.
+
+En résumé, ce projet se situe à l'intersection entre l'\gls{ia}
+générative de pointe et des besoins éducatifs concrets. En
+construisant une famille d'agents spécialisés autour d'une base
+de connaissances pédagogique partagée et d'un mécanisme
+d'indexation commun, nous cherchons à démontrer qu'une
+architecture orientée \textbf{qualité} produit un contenu plus
+cohérent et plus ancré que l'approche mono-modèle existante,
+tout en respectant les exigences de cybersécurité d'un
+environnement éducatif.
+\newpage
