@@ -12,17 +12,21 @@ L'introduction a posé le problème (redondance, absence d'ancrage factuel,
 absence de séparation des privilèges) et le chapitre~1 a établi les fondations
 théoriques : orchestration d'agents, Model Context Protocol et \gls{rag}
 agentique. Le présent chapitre traduit ces fondations en une conception logique
-complète, organisée en trois parties conformément à la structure retenue avec
-l'encadrant.
+complète, puis relit les implémentations livrées comme un \emph{catalogue
+comparé de formes d'agents}. Il prépare ainsi la stratégie d'orchestration qui
+fera l'objet du chapitre~3.
 
 La première partie traite de l'indexation des activités, pierre angulaire sans
 laquelle la non-redondance ne serait qu'un v{\oe}u. La deuxième présente le
 protocole \gls{mcp} tel qu'il s'applique au système, avec le catalogue d'outils
 qu'il expose et le principe du moindre privilège qui gouverne leur
-distribution. La troisième détaille le catalogue des agents retenus pour cette
-première version. La méthodologie de tests sera définie ultérieurement, une
-fois le développement suffisamment avancé pour disposer de résultats concrets
-à évaluer.
+distribution. La troisième détaille le catalogue des agents retenus, en
+réservant une matrice à quatre variantes pour l'agent de création de syllabus.
+La quatrième propose une lecture comparative des implémentations : non un test
+de conformité, mais un examen architectural de ce que chaque variante
+privilégie et de ce qu'elle paie en contrepartie. La conclusion enchaîne sur le
+chapitre~3, en montrant que ces différences de conception appellent une
+stratégie d'orchestration de niveau supérieur.
 
 %% ────────────────────────────────────────────────────────────
 \section{Indexation des activités pédagogiques}
@@ -85,11 +89,15 @@ lorsqu'ils en divergent. Le choix précis de cette mesure (cosinus, distance
 euclidienne ou autre) relève de la configuration du moteur d'indexation et
 non de la conception de l'agent.
 
-Un seuil $\tau$, fixé de manière empirique, permet de décider si deux
-activités sont sémantiquement trop proches : si la similarité dépasse $\tau$,
-l'agent doit signaler un risque de doublon avant toute écriture. Ce seuil est
-un paramètre du serveur, pas une connaissance que l'agent embarque dans son
-prompt.
+Une calibration de cette similarité — un point au-delà duquel deux activités
+sont considérées comme un quasi-doublon — peut être fixée côté serveur de
+manière empirique. Cette calibration reste un paramètre d'implémentation~:
+elle n'appartient pas au contrat de l'agent, qui consomme la primitive de
+recherche sans en connaître les constantes. Le chapitre ne fait donc pas
+reposer son argumentaire sur une valeur numérique particulière~; ce sont les
+\emph{propriétés} de la recherche par similarité (ordonnancement par
+proximité, signal complémentaire de la lecture directe) qui structurent la
+conception.
 
 \subsection{Pipeline d'indexation}
 \label{sec:pipeline-index}
@@ -881,10 +889,12 @@ contexte \textsc{LLM} propre, c'est-à-dire sans héritage de
 l'historique du superviseur. La deuxième est la liste blanche d'outils
 MCP, distincte pour chaque sous-agent : le \mcptool{pedagogy_planner}
 se contente de lectures (\mcptool{list_syllabuses}, \mcptool{get_syllabus}),
-le \mcptool{writer} accède aux écritures \mcptool{create_chapter} et
-\mcptool{create_lesson}, l'\mcptool{activity_maker} écrit
-\mcptool{create_activity}, tandis que le \mcptool{pedagogy_critic}
-reste en lecture seule. Vient enfin le canal d'inter-communication,
+le \mcptool{writer} dispose des outils d'écriture du serveur Curriculum
+(\mcptool{create_unity}, \mcptool{create_activity},
+\mcptool{update_activity}) et l'\mcptool{activity_maker} se concentre sur
+la production du worksheet structuré qu'il persiste également via
+\mcptool{create_activity} ; le \mcptool{pedagogy_critic} reste
+en lecture seule. Vient enfin le canal d'inter-communication,
 matérialisé par un \gls{vfs} partagé : les sous-agents y échangent
 leurs artefacts via les chemins \mcptool{/user_profile.md},
 \mcptool{/pedagogy_plan.md}, \mcptool{/lessons/<id>.md},
@@ -1327,348 +1337,244 @@ une valeur nulle ou indisponible, il en signale explicitement la
 nature plutôt que de fabriquer un chiffre intermédiaire.
 
 %% ────────────────────────────────────────────────────────────
-\section{Tests et évaluation de la couche d'agents}
-\label{sec:tests}
+\section{Lecture comparative des implémentations}
+\label{sec:comparatif}
 
-Le développement de la couche d'agents ayant atteint un degré de maturité
-suffisant, cette section présente les résultats d'une campagne de tests
-menée sur l'instance de production déployée sur Railway
-(\url{https://api-production-1caf.up.railway.app}). Trois axes de
-comparaison structurent l'évaluation~: la \textbf{latence} de bout en bout,
-la \textbf{consommation de tokens \gls{llm}} et l'\textbf{ancrage contextuel}
-des contenus générés.
+Cette section ne cherche pas à désigner une variante gagnante : elle
+relit les implémentations livrées comme autant de \emph{réponses
+différentes à des questions d'intégration différentes}. Elle montre
+ce que chaque architecture privilégie (contrôle opérateur,
+auditabilité, réactivité, intégrabilité programmatique) et ce qu'elle
+paie en contrepartie. Les observations chiffrées rapportées au fil du
+texte ont été recueillies sur l'instance déployée à des fins
+d'\emph{ordres de grandeur} ; elles éclairent les contraintes
+pratiques de chaque variante, sans constituer un test de conformité.
 
-\subsection{Protocole de test}
-\label{sec:test-protocole}
+\subsection{Axes de comparaison}
+\label{sec:axes-compar}
 
-L'évaluation porte sur deux campagnes distinctes.
+Quatre axes structurent la lecture. \textbf{Propriétaire de
+l'orchestration} : qui décide, à l'exécution, du prochain pas du
+graphe — un superviseur \gls{llm} ou du code \textsc{TypeScript}
+déterministe ? Cet axe gouverne directement l'auditabilité et la
+reproductibilité. \textbf{Posture humaine} : la variante suppose-t-elle
+un enseignant disponible en temps réel (\emph{human-in-the-loop}),
+un opérateur qui pilote la production de manière asynchrone via une
+machine d'état, ou aucun humain (déclencheur programmatique) ?
+\textbf{Granularité de l'artefact inspectable} : le travail
+intermédiaire transite-t-il par un flux de tokens éphémère, par des
+fichiers persistants dans un \gls{vfs} partagé, ou par des lignes
+typées en base de données ? \textbf{Coût et latence} : l'enveloppe
+de tokens et le temps de bout en bout situent la variante par
+rapport à l'attente de l'utilisateur final, plus qu'ils ne la
+qualifient en valeur absolue.
 
-\paragraph{Campagne~A — Générateurs d'activités (agent~1 vs.\ agent~2).}
-Pour chaque prompt d'évaluation, deux fils de discussion sont créés en
-parallèle~: l'un avec l'agent~1 (\mcptool{activity-generator-toolless}),
-l'autre avec l'agent~2 (\mcptool{activity-generator-tooled}), ce dernier
-étant lié à un syllabus existant (\emph{Recursion for Computer Science
-Undergraduates}, 2~chapitres, 2~leçons). Trois prompts de difficulté
-croissante sont utilisés~:
+\subsection{Agent~1 contre agent~2 : la valeur conditionnelle de l'ancrage}
+\label{sec:a1-vs-a2}
 
-\begin{enumerate}
-  \item \emph{Exercices de récursion} — « Generate 3 practice exercises
-    about recursion fundamentals [\ldots] targeting difficulty levels 2,
-    3, and 4. »
-  \item \emph{Quiz parcours d'arbres} — « Create a quiz with 5 MCQs
-    testing understanding of tree traversal algorithms (in-order,
-    pre-order, post-order) [\ldots] »
-  \item \emph{Itération vs.\ récursion} — « Generate a short course lesson
-    about the difference between iteration and recursion, with practical
-    Python examples [\ldots] »
-\end{enumerate}
+Le générateur d'activités sans \gls{mcp} (agent~1) et son homologue
+outillé (agent~2) partagent un même schéma de sortie mais diffèrent
+radicalement par leur posture vis-à-vis de l'existant. Sur les sujets
+rejoués depuis l'instance déployée, deux régimes se distinguent.
+Lorsque le sujet recoupe le syllabus lié, l'agent~2 mobilise ses
+outils de lecture, consulte les activités sœurs et produit un contenu
+\emph{ancré} dans les objectifs et le vocabulaire de l'unité
+concernée ; l'agent~1, par construction, ne peut produire qu'un
+contenu générique. Lorsque le sujet sort du périmètre, l'agent~2
+ne déclenche aucune lecture et se replie sur le comportement de
+l'agent~1. Ce repli est un comportement de conception, non un
+défaut~: il signifie que le coût d'ancrage n'est payé que quand il
+apporte une valeur.
 
-Pour chaque exécution, le flux SSE retourné par l'\gls{api} est capturé
-intégralement ; les métriques extraites sont~: le temps total de réponse
-(de la requête HTTP au chunk \mcptool{[DONE]}), le nombre de tokens
-d'entrée et de sortie rapporté par le \gls{llm}, le nombre d'appels
-d'outils \gls{mcp} effectués et la taille du worksheet \gls{json} produit.
+L'ancrage a précisément un coût observable. À l'échelle des trois
+prompts rejoués, l'agent~2 consomme environ trois fois plus de
+tokens d'entrée que l'agent~1 et présente un surcoût de latence de
+l'ordre de quelques dizaines de pour cent, entièrement imputable à
+la phase de lecture qui précède la génération. Les tokens de sortie
+restent comparables : le surcoût n'est pas dans la rédaction, mais
+dans le contexte qu'elle exige. Cet écart n'est pas un défaut à
+corriger~; il est le tarif explicite de l'ancrage. Il pose, en
+revanche, la question architecturale du \emph{moment} où ce coût
+doit être payé — à chaque génération, ou une fois par session — que
+le chapitre suivant reprend dans sa partie consacrée au cache de
+contexte.
 
-\paragraph{Campagne~B — Génération de syllabus (agent~3, V1/Op.~1).}
-Un syllabus complet est généré en un seul tour de conversation avec un
-prompt entièrement spécifié (sujet, audience, durée, structure). Les
-métriques collectées sont~: le temps total, le nombre d'appels \gls{llm}
-par nœud du graphe (superviseur, rédacteur, critique), les tokens
-consommés par phase et le nombre de cycles rédacteur-critique observés.
+L'enseignement principal de cette paire est qualitatif :
+l'indexation et le \gls{mcp} n'apportent pas une amélioration
+uniforme mais une amélioration \emph{conditionnelle au sujet}. Une
+stratégie d'orchestration sensible à ce conditionnement (router vers
+l'agent~1 ou vers l'agent~2 selon la pertinence du périmètre)
+préserverait la qualité d'ancrage sans en payer le coût quand il
+n'apporte rien : c'est l'un des leviers que le chapitre~3 explore.
 
-\subsection{Résultats — Campagne A : agent~1 vs.\ agent~2}
-\label{sec:test-resultats-a}
+\subsection{Quatre variantes de l'agent~3, quatre profils d'intégration}
+\label{sec:4variantes}
 
-\subsubsection{Latence de bout en bout}
+Les quatre variantes de l'agent~3, présentées à la
+\textsection\ref{sec:agent3}, se distinguent moins par la qualité
+intrinsèque du contenu généré que par la \emph{posture} qu'elles
+supposent côté opérateur et côté intégrateur. Nous les relisons ici
+à travers les axes définis plus haut.
 
-Le tableau~\ref{tab:latence-activite} synthétise les temps de réponse
-mesurés. L'agent~2 présente un surcoût de latence de l'ordre de $+38\,\%$
-en moyenne, directement imputable à la phase de lecture \gls{mcp}
-(liste des leçons, lecture du corps de la leçon) qui précède la
-génération.
+\paragraph{V1/Op.~1 — conversation + \emph{Human-in-the-Loop}.}
+Cette variante place le superviseur \gls{llm} au cœur du routage :
+c'est le modèle qui décide, à chaque tour, d'enchaîner intake,
+recherche, écriture ou réplique. Le contrat avec l'enseignant est
+celui d'un dialogue : interruptions structurées (formulaire d'intake,
+questions de clarification), streaming de tokens, possibilité de
+corriger en ligne. Cette approche est mieux adaptée à un enseignant
+qui souhaite \emph{co-construire} un syllabus à voix haute, ou
+clarifier interactivement une commande mal spécifiée. En contrepartie,
+l'orchestration n'est auditable qu'a posteriori, par les traces
+\gls{llm} : aucun pipeline de code n'est exécuté de bout en bout, ce
+qui limite la reproductibilité et complique l'intégration dans une
+chaîne CI/CD ou un workflow industriel.
 
-\begin{table}[H]
-\centering
-\caption{Latence de bout en bout (ms) — générateurs d'activités.}
-\label{tab:latence-activite}
-\small
-\begin{tabularx}{\linewidth}{@{}X r r r@{}}
-\toprule
-\textbf{Prompt} & \textbf{Agent~1 (ms)} & \textbf{Agent~2 (ms)} & \textbf{Surcoût}\\
-\midrule
-Exercices de récursion   & 19\,038 & 27\,891 & $+46{,}5\,\%$\\
-Quiz parcours d'arbres   & 14\,989 & 19\,588 & $+30{,}7\,\%$\\
-Itération vs.\ récursion & 12\,683 & 17\,038 & $+34{,}3\,\%$\\
-\addlinespace
-\textbf{Moyenne}         & \textbf{15\,570} & \textbf{21\,506} & $\mathbf{+38{,}1\,\%}$\\
-\bottomrule
-\end{tabularx}
-\end{table}
+\paragraph{V1/Op.~2 — sous-agents spécialistes + VFS.}
+La variante \mcptool{deepagent} conserve le superviseur \gls{llm}
+mais externalise les phases en sous-agents porteurs d'instructions
+système dédiées (planner, writer, activity-maker, critic). Le canal
+d'inter-communication, un \gls{vfs} partagé, matérialise des
+artefacts intermédiaires inspectables (\mcptool{/pedagogy\_plan.md},
+\mcptool{/lessons/<id>.md}, \mcptool{/critiques/<target>.md}). Cette
+décomposition est mieux adaptée à un usage où l'on souhaite
+\emph{séparer explicitement les responsabilités} de chaque phase
+et inspecter \emph{a posteriori} les artefacts produits par chacune.
+En contrepartie, l'orchestration de plus haut niveau reste portée
+par le superviseur \gls{llm}, et chaque délégation paie l'isolement
+de contexte par un briefing exhaustif à reconstruire : le coût en
+tokens y est sensiblement plus élevé qu'en V1/Op.~1.
 
-\subsubsection{Consommation de tokens}
+\paragraph{V2/Op.~1 — atelier formulaire + ordonnanceur déterministe.}
+La variante \mcptool{unit-bulk-supervisor} déplace l'orchestration
+hors du \gls{llm} : aucun superviseur \gls{llm} n'intervient au
+niveau du syllabus, et l'ordonnancement par vagues de dépendances est
+porté par du code \textsc{TypeScript} pur. La progression de chaque
+activité est exposée par une machine d'état publique
+(figure~\ref{fig:v2-status}), ce qui rend la surface consommable
+sans interpréter un protocole de streaming. Cette variante est mieux
+adaptée à un \emph{atelier rédactionnel asynchrone}, où l'opérateur
+décide quand lancer une vague et observe la progression à travers
+des statuts typés. En contrepartie, l'absence d'interruption en
+ligne et de streaming impose une interface plus dense côté
+enseignant, et exclut par construction la correction conversationnelle
+en cours de génération.
 
-Le tableau~\ref{tab:tokens-activite} montre que l'agent~2 consomme en
-moyenne $3{,}2\times$ plus de tokens en entrée que l'agent~1, en raison
-de l'injection du contexte du syllabus dans le prompt. Le nombre de
-tokens en sortie reste comparable, ce qui indique que le surcoût se
-concentre exclusivement sur la phase de lecture.
+\paragraph{V2/Op.~2 — orchestrateur SDK \emph{one-shot}.}
+La variante \mcptool{sdk-orchestrator} pousse le déplacement plus
+loin : l'unique surface est un endpoint REST qui répond
+\textsc{HTTP}~202 et exécute la génération en arrière-plan, en
+parallélisant les unités via la primitive \mcptool{Send} de
+LangGraph. La planification produit un contrat de cours complet
+\emph{avant} la première écriture, ce qui réduit la dérive
+structurelle. Cette variante est mieux adaptée à un
+\emph{déclenchement industriel} (autre application, batch nocturne,
+ingestion programmatique). En contrepartie, l'enseignant n'a aucun
+levier pendant l'exécution : la seule observation est la machine
+d'état publique, comme en V2/Op.~1, et toute correction suppose de
+repasser par la surface atelier.
 
-\begin{table}[H]
-\centering
-\caption{Consommation de tokens — générateurs d'activités.}
-\label{tab:tokens-activite}
-\small
-\begin{tabularx}{\linewidth}{@{}X r r r r r r@{}}
-\toprule
- & \multicolumn{3}{c}{\textbf{Agent~1}} & \multicolumn{3}{c}{\textbf{Agent~2}}\\
-\cmidrule(lr){2-4}\cmidrule(lr){5-7}
-\textbf{Prompt} & \textbf{In} & \textbf{Out} & \textbf{Total}
-                & \textbf{In} & \textbf{Out} & \textbf{Total}\\
-\midrule
-Exercices de récursion   & 3\,388 &  86 & 3\,474  & 11\,580 & 155 & 11\,735\\
-Quiz parcours d'arbres   & 2\,782 &  77 & 2\,859  &  8\,260 &  80 &  8\,340\\
-Itération vs.\ récursion & 2\,619 &  85 & 2\,704  &  8\,628 &  69 &  8\,697\\
-\addlinespace
-\textbf{Moyenne}    & \textbf{2\,930} & \textbf{83} & \textbf{3\,012}
-                    & \textbf{9\,489} & \textbf{101} & \textbf{9\,591}\\
-\bottomrule
-\end{tabularx}
-\end{table}
+\subsection{Coûts observés et enveloppes d'usage}
+\label{sec:observations}
 
-\subsubsection{Ancrage contextuel et outils MCP}
+Quelques mesures issues de l'instance déployée fixent les ordres de
+grandeur, sans constituer un classement. La génération d'un syllabus
+complet via la V1/Op.~1 prend, selon la complexité de la requête et
+l'activation ou non d'un cycle critique, de l'ordre de la
+demi-minute à deux minutes. La production d'une activité par
+l'agent~2 paie une phase de lecture qui ajoute de l'ordre de
+plusieurs dizaines de pour cent de latence à la ligne de base de
+l'agent~1, et environ triple la taille du prompt d'entrée. Les voies
+V2, qui n'exposent pas de latence interactive, se caractérisent
+plutôt par leur \emph{débit agrégé} d'une vague, lequel dépend du
+parallélisme inter-unités et du plafond imposé par l'ordonnanceur.
 
-Le tableau~\ref{tab:ancrage} met en évidence la différence fondamentale
-entre les deux agents. L'agent~2, lorsque le prompt porte sur un sujet
-couvert par le syllabus lié, déclenche automatiquement les outils de
-lecture \gls{mcp} (\mcptool{list_lessons_for_thread},
-\mcptool{get_lesson}) avant de produire le contenu. Le test~1 illustre
-ce comportement~: l'agent~2 a identifié la leçon
-\emph{Recursion Fundamentals} dans le syllabus, l'a lue intégralement,
-puis a produit un worksheet \textbf{ancré} dans les objectifs
-d'apprentissage et les termes clés de cette leçon. L'agent~1, ne
-disposant d'aucun accès au syllabus, a produit un contenu générique
-portant l'avertissement \emph{unsourced}.
+Ces chiffres ne désignent pas une variante préférable : ils
+qualifient des \emph{enveloppes d'usage} différentes. Une enveloppe
+interactive (V1) suppose une attente d'utilisateur de l'ordre de la
+minute et tolère le streaming. Une enveloppe atelier (V2/Op.~1)
+suppose une production asynchrone observable par statut. Une
+enveloppe industrielle (V2/Op.~2) suppose un déclencheur
+programmatique non bloquant. Chaque enveloppe est cohérente avec
+sa variante d'origine et incohérente avec les autres : c'est ce
+constat, plus que les valeurs absolues mesurées, qui motive le
+chapitre suivant.
 
-Lorsque le prompt porte sur un sujet hors du périmètre du syllabus lié
-(tests~2 et~3), l'agent~2 se comporte de manière identique à l'agent~1~:
-il ne déclenche aucun outil de lecture et produit un worksheet non ancré.
-Ce comportement de repli est attendu par conception.
+\subsection{Enseignements croisés}
+\label{sec:enseignements}
 
-\begin{table}[H]
-\centering
-\caption{Ancrage contextuel — appels d'outils MCP et état du contenu.}
-\label{tab:ancrage}
-\small
-\begin{tabularx}{\linewidth}{@{}X c c c c@{}}
-\toprule
-\textbf{Prompt} & \textbf{Agent} & \textbf{Outils MCP} & \textbf{Ancré} & \textbf{MCQs}\\
-\midrule
-\multirow{2}{*}{Exercices de récursion}
-  & 1 & 0 & Non & 3\\
-  & 2 & 2 & \textbf{Oui} & 3\\
-\addlinespace
-\multirow{2}{*}{Quiz parcours d'arbres}
-  & 1 & 0 & Non & 5\\
-  & 2 & 0 & Non & 5\\
-\addlinespace
-\multirow{2}{*}{Itération vs.\ récursion}
-  & 1 & 0 & Non & 4\\
-  & 2 & 0 & Non & 4\\
-\bottomrule
-\end{tabularx}
-\end{table}
+Trois enseignements émergent de cette lecture comparative. D'abord,
+la \emph{propriété de l'orchestration} (\gls{llm} contre code) est
+l'axe structurant : il décide de l'auditabilité, de la
+reproductibilité et du coût d'intégration plus que le nombre de
+sous-agents ou la nature du critic. Ensuite, les variantes diffèrent
+moins par la qualité du contenu que par la \emph{posture humaine}
+qu'elles supposent ; aucune n'est universellement meilleure parce
+qu'aucune ne s'adresse à la même phase du parcours pédagogique de
+SprintUp. Enfin, la valeur de l'indexation et du \gls{mcp} n'est pas
+uniforme : elle est conditionnelle au périmètre de la requête, ce
+qui suggère qu'elle relève d'une stratégie de \emph{routage} et non
+d'une activation inconditionnelle.
 
-\subsubsection{Qualité structurelle du contenu}
-
-Le tableau~\ref{tab:qualite-struct} résume la structure des worksheets
-produits. Les deux agents respectent le schéma de sortie attendu
-(MCQs avec 4~options chacune, explications, questions ouvertes).
-L'agent~2 produit un contenu légèrement plus compact ($-11\,\%$ en
-moyenne) mais mieux ciblé, en ce sens que le worksheet est calibré
-sur les objectifs d'apprentissage de la leçon source plutôt que sur
-des connaissances génériques du modèle.
-
-\begin{table}[H]
-\centering
-\caption{Structure des worksheets produits.}
-\label{tab:qualite-struct}
-\small
-\begin{tabularx}{\linewidth}{@{}X c r r r@{}}
-\toprule
-\textbf{Prompt} & \textbf{Agent} & \textbf{MCQs} & \textbf{Questions ouvertes} & \textbf{Taille (car.)}\\
-\midrule
-\multirow{2}{*}{Exercices de récursion}
-  & 1 & 3 & 1 & 5\,541\\
-  & 2 & 3 & 1 & 4\,369\\
-\addlinespace
-\multirow{2}{*}{Quiz parcours d'arbres}
-  & 1 & 5 & 0 & 3\,358\\
-  & 2 & 5 & 0 & 2\,813\\
-\addlinespace
-\multirow{2}{*}{Itération vs.\ récursion}
-  & 1 & 4 & 1 & 3\,638\\
-  & 2 & 4 & 1 & 4\,249\\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\subsection{Résultats — Campagne B : génération de syllabus}
-\label{sec:test-resultats-b}
-
-Un syllabus \emph{Introduction to Databases} (2~chapitres, 2~leçons,
-1~heure) a été généré via l'agent~3 (V1/Op.~1,
-\mcptool{syllabus-generator}). Le tableau~\ref{tab:syllabus-timing}
-détaille les phases observées et la consommation de tokens par nœud
-du graphe LangGraph.
-
-\begin{table}[H]
-\centering
-\caption{Génération de syllabus — décomposition par phase.}
-\label{tab:syllabus-timing}
-\small
-\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{3.6cm}
-    >{\raggedright\arraybackslash}p{2.8cm} r r r@{}}
-\toprule
-\textbf{Nœud} & \textbf{Tier / Modèle} & \textbf{Tokens in} & \textbf{Tokens out} & \textbf{Total}\\
-\midrule
-\mcptool{supervisor}        & supervisor / GLM-5.1     & 3\,147 & 2\,091 &  5\,238\\
-\mcptool{writer} (ch.~1)    & writer / GLM-4.7-Flash   & 1\,417 & 3\,446 &  4\,863\\
-\mcptool{critic} (ch.~1)    & critic / GPT-oss-120B    & 3\,311 & 1\,805 &  5\,116\\
-\mcptool{writer\_patch} (ch.~1) & writer / GLM-4.7-Flash & 3\,660 & 1\,616 & 5\,276\\
-\mcptool{writer} (ch.~2)    & writer / GLM-4.7-Flash   & 2\,435 & 3\,728 &  6\,163\\
-\mcptool{critic} (ch.~2)    & critic / GPT-oss-120B    & 4\,290 & 1\,414 &  5\,704\\
-\mcptool{supervisor:wrap\_up} & supervisor / GLM-5.1    &   175 &   741 &    916\\
-\addlinespace
-\textbf{Total}              &                         & \textbf{18\,435} & \textbf{14\,841} & \textbf{33\,276}\\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-Observations~:
-
-\begin{itemize}
-  \item Le temps total de génération est de \textbf{122{,}7~secondes}
-    ($\approx 2$~minutes). Ce temps se décompose en trois phases~:
-    planification du syllabus par le superviseur, rédaction parallèle
-    des leçons par le rédacteur avec vérification par le critique, et
-    consolidation finale.
-  \item Le graphe a effectué \textbf{2~cycles rédacteur-critique}
-    (un par chapitre). Pour le chapitre~1, le critique a émis des
-    remarques qui ont déclenché une passe de correction
-    (\mcptool{writer\_patch}), tandis que le chapitre~2 a été accepté
-    sans révision.
-  \item La répartition des tokens par tier montre que le rédacteur
-    (GLM-4.7-Flash) est le plus gros consommateur en sortie
-    (8\,790~tokens cumulés), ce qui est cohérent avec la production de
-    contenus longs (cours structurés en Markdown). Le critique
-    (GPT-oss-120B) consomme davantage en entrée (7\,601~tokens) car il
-    reçoit l'intégralité de la leçon à évaluer.
-  \item Le syllabus produit comprend 2~chapitres, 2~leçons, avec des
-    objectifs Bloom explicites, des prérequis chaînés et des exemples
-    SQL résolus.
-\end{itemize}
-
-\subsection{Comparaison avec les syllabus historiques}
-
-Le tableau~\ref{tab:syllabus-hist} compare les performances de
-l'agent~3 sur quatre syllabus générés à des dates différentes. Le
-temps de génération varie de 30~secondes (1~chapitre, structure simple)
-à 2~minutes (2~chapitres, cycle critique complet), avec une corrélation
-positive entre la complexité de la requête et la durée.
-
-\begin{table}[H]
-\centering
-\caption{Performances historiques de l'agent~3 (syllabus-generator).}
-\label{tab:syllabus-hist}
-\small
-\begin{tabularx}{\linewidth}{@{}X r r r r@{}}
-\toprule
-\textbf{Syllabus} & \textbf{Durée (s)} & \textbf{Chapitres} & \textbf{Leçons} & \textbf{Contenu (car.)}\\
-\midrule
-English A1: First Steps       &  95{,}7 & 3 & 5 & 23\,077\\
-Recursion for CS Undergrads   &  32{,}1 & 2 & 2 & 17\,711\\
-Introduction to Python        &  29{,}9 & 1 & 3 & 23\,195\\
-Introduction to Databases     & 122{,}7 & 2 & 2 & 16\,585\\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\subsection{Synthèse et discussion}
-\label{sec:test-synthese}
-
-Les résultats de la campagne de tests permettent de tirer trois
-conclusions principales.
-
-\paragraph{Le surcoût du MCP est mesuré et acceptable.} L'agent~2,
-enrichi par les outils \gls{mcp} et l'indexation vectorielle, présente
-un surcoût moyen de $+38\,\%$ en latence et $\times 3{,}2$ en tokens
-d'entrée par rapport à l'agent~1. Ce surcoût est entièrement imputable
-à la phase de lecture contextuelle (liste des leçons, lecture du corps
-de la leçon cible) et ne se traduit pas par une augmentation des
-tokens de sortie. Pour un cas d'usage pédagogique où la qualité du
-contenu prime sur la vitesse de génération, ce compromis est
-favorable.
-
-\paragraph{L'ancrage contextuel apporte une valeur mesurable.}
-Lorsque le prompt porte sur un sujet couvert par le syllabus lié,
-l'agent~2 produit un contenu \emph{ancré} dans les objectifs
-d'apprentissage et les termes clés de la leçon source, tandis que
-l'agent~1 produit un contenu générique. Cette différence est
-structurante pour la plateforme SprintUp, où la cohérence entre les
-activités et le syllabus est une exigence pédagogique de premier
-ordre.
-
-\paragraph{Le pipeline rédacteur-critique fonctionne comme prévu.}
-La génération de syllabus montre que le cycle rédacteur-critique
-s'exécute de manière fiable~: le critique identifie les points
-d'amélioration, le rédacteur applique les corrections, et le
-résultat final est un contenu structuré et pédagogiquement cohérent.
-Le coût additionnel d'un cycle critique ($\approx 5\,000$~tokens
-supplémentaires) est justifié par l'amélioration de la qualité de
-la leçon produite.
+Ces trois constats — propriété de l'orchestration, posture humaine,
+conditionnalité de l'ancrage — ne se résolvent pas au niveau d'une
+variante isolée. Ils appellent une \emph{stratégie d'orchestration}
+qui articule la coexistence des variantes selon la phase du
+workflow et le contexte d'intégration. Le chapitre suivant prend en
+charge cette stratégie : routage entre variantes, articulation des
+surfaces conversationnelle, atelier et SDK, politique de sécurité
+adossée au principe du moindre privilège, et procédure
+d'opérationnalisation sur l'instance déployée.
 
 %% ────────────────────────────────────────────────────────────
-\section{Conclusion du chapitre}
+\section{Conclusion : du catalogue à l'orchestration}
+\label{sec:ch2-conclusion}
 
-Ce chapitre a présenté la conception logique complète de la couche d'agents,
-ainsi que les résultats de la première campagne de tests menée sur
-l'instance de production.
-L'indexation vectorielle ouvre deux niveaux d'usage complémentaires : un
-niveau intra-syllabus où elle agit comme garde-fou de la lecture directe, et
-un niveau global où elle devient l'instrument principal d'anti-redondance et
-de recommandation. Le protocole \gls{mcp} standardise l'accès aux données et
-matérialise le principe du moindre privilège par des listes blanches
-d'outils. Les agents, décrits selon des rubriques normalisées, couvrent
-l'ensemble du cycle pédagogique : conception de la structure (agent~3,
-décliné en quatre variantes sur la matrice mode d'interaction
-$\times$ stratégie d'orchestration de la
-figure~\ref{fig:matrice-agents}), production de contenu (agents~1
-et~2), révision enseignante (agent~4) et accompagnement apprenant
-(agent~5).
+Ce chapitre a présenté la conception logique de la couche d'agents
+de SprintUp et la lecture comparative des implémentations livrées.
+Trois éléments le structurent. \textbf{L'indexation vectorielle} ne
+remplace pas la lecture directe des activités sœurs : elle la
+prolonge, comme garde-fou intra-syllabus et comme instrument
+principal d'anti-redondance et de recommandation à l'échelle de
+toute la base. \textbf{Le protocole \gls{mcp}} standardise l'accès
+aux données et matérialise concrètement le principe du moindre
+privilège : trois serveurs disjoints, une liste blanche d'outils par
+agent, aucun chemin direct de l'agent vers la base de données.
+\textbf{Le catalogue des agents} — deux générateurs d'activités,
+quatre variantes du concepteur de syllabus, un tuteur, un assistant
+élève et un assistant administrateur — couvre l'ensemble du cycle
+pédagogique sans imposer un unique paradigme d'interaction.
 
-La campagne de tests a confirmé trois résultats. D'abord, le surcoût
-introduit par le \gls{mcp} ($+38\,\%$ en latence, $\times 3{,}2$ en tokens
-d'entrée) est mesuré et acceptable pour un cas d'usage pédagogique.
-Ensuite, l'ancrage contextuel fourni par les outils de lecture apporte
-une valeur mesurable~: l'agent~2 produit un contenu aligné sur les
-objectifs d'apprentissage du syllabus, là où l'agent~1 produit un
-contenu générique. Enfin, le pipeline rédacteur-critique de l'agent~3
-fonctionne de manière fiable et produit des syllabus structurés en
-2~minutes environ.
+La lecture comparative de la \textsection\ref{sec:comparatif} a mis
+en évidence le point central de ce chapitre : les quatre variantes
+de l'agent~3 ne s'inscrivent pas sur une échelle linéaire de
+qualité, mais répondent à des questions d'intégration distinctes
+(co-construction conversationnelle, décomposition spécialiste,
+atelier asynchrone, déclenchement industriel). Aucune n'est
+universellement préférable, parce qu'aucune ne s'adresse à la même
+phase du workflow ni au même contexte d'usage. Cette pluralité est
+un constat de conception, pas une indécision : elle reflète la
+diversité réelle des cas d'usage que SprintUp doit servir.
 
-La conception de l'agent~3 a depuis été étendue à une seconde surface,
-dite \textbf{Version~2}, qui supprime la conversation au profit d'un
-atelier manuel (V2/Op1) et d'un orchestrateur \gls{sdk} \emph{one-shot}
-(V2/Op2). En Version~2, la progression de chaque activité est exposée
-par une \emph{machine d'état publique} (figure~\ref{fig:v2-status}),
-ce qui rend la surface consommable par un \gls{sdk} externe sans devoir
-parler le protocole de streaming de la Version~1. Trois canaux
-d'inter-communication coexistent désormais : l'orchestrateur LLM de la
-V1/Op1, le \gls{vfs} partagé du \mcptool{deepagent} (V1/Op2) et
-l'ordonnanceur \textsc{TypeScript} pur de la Version~2.
+Cette pluralité ouvre, en retour, une question d'\emph{orchestration
+de niveau supérieur}. Comment router une demande pédagogique vers la
+variante adaptée à la phase du parcours et au contexte d'intégration ?
+Comment articuler les surfaces conversationnelle, atelier et SDK
+sans démultiplier le code de plomberie ? Comment opérationnaliser,
+observer et sécuriser la coexistence de ces variantes sur l'instance
+déployée ? Et comment, sur cette même couche, traduire le principe
+du moindre privilège du \gls{mcp} en une politique de sécurité
+applicative au sens propre ?
 
-La coordination de ces agents par un orchestrateur, ainsi que l'analyse de
-sécurité associée, feront l'objet du chapitre~3, une fois la présente
-conception validée et le développement engagé.
+Le chapitre~3 prend ces questions en charge. Il définit la stratégie
+d'orchestration des variantes (politique de routage, articulation
+des surfaces, mutualisation des sous-graphes communs), décrit le
+dispositif d'observabilité associé (traces \gls{llm}, machine d'état
+publique, métriques de débit et de latence), et adosse à ce
+dispositif l'analyse de sécurité — surface d'attaque, contrôle
+d'accès, gestion des secrets, traitement des données personnelles —
+ainsi que les procédures d'opérationnalisation nécessaires à la
+mise en production. Le chapitre~2 a comparé les formes d'agents ; le
+chapitre~3 organise leur coexistence.
 
 \newpage
