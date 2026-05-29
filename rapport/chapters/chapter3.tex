@@ -1,0 +1,1004 @@
+%% ============================================================
+%%  CHAPITRE 3 — Stratégie d'orchestration et observabilité
+%%               de la couche d'agents
+%% ============================================================
+\chapter{Stratégie d'orchestration et observabilité de la couche d'agents}
+\label{chap:orchestration}
+
+%% Listes d'outils \mcptool{...} denses : autoriser les coupures à _ , ( etc.
+\sloppy
+
+Le chapitre~2 s'est achevé sur un constat à trois faces. La
+\emph{propriété de l'orchestration} — selon qu'un superviseur \gls{llm}
+ou du code déterministe décide du prochain pas — est l'axe qui
+gouverne le plus directement l'auditabilité et la reproductibilité
+d'une variante. Les variantes diffèrent ensuite moins par la qualité
+intrinsèque du contenu produit que par la \emph{posture humaine}
+qu'elles supposent : enseignant disponible en temps réel, opérateur
+qui pilote une production asynchrone, ou client programmatique sans
+humain dans la boucle. Enfin, la valeur de l'indexation et du
+protocole d'accès aux données n'est pas uniforme mais
+\emph{conditionnelle au périmètre} de la demande. Aucune des variantes
+comparées n'est universellement préférable, parce qu'aucune ne
+s'adresse à la même phase du parcours pédagogique de SprintUp.
+
+Cette pluralité n'est pas une indécision de conception : elle reflète
+la diversité réelle des usages que la plateforme doit servir. Elle
+déplace toutefois la question d'un niveau. Tant que l'on raisonne
+variante par variante, on décrit des formes d'agents isolées ; dès
+lors que ces formes coexistent, il faut une logique de niveau
+supérieur pour décider laquelle invoquer, pour observer ce qu'elles
+font une fois lancées, et pour reconnaître ce qu'elles ne savent pas
+encore faire ensemble. Le présent chapitre prend en charge cette
+logique. Il ne propose pas \emph{une} orchestration unique qui
+remplacerait les variantes ; il propose une \emph{stratégie} qui
+organise leur coexistence, en décrit l'observation et en énonce
+honnêtement les limites.
+
+Le chapitre s'organise en quatre temps. La première partie définit la
+stratégie d'orchestration des variantes : un rappel resserré des trois
+surfaces d'interaction héritées du chapitre~2, la politique de routage
+qui choisit la variante adaptée à une situation, les sous-graphes que
+plusieurs variantes mutualisent, et la composabilité aujourd'hui
+limitée de ces surfaces. La deuxième partie décrit ce que signifie
+\emph{observer} cette couche d'agents en fonctionnement, à partir de
+trois artefacts d'observation et d'un identifiant de fil servant de
+trame de corrélation. La troisième partie dresse un bilan lucide des
+limites actuelles et des besoins de fiabilisation, au niveau de
+l'architecture et non de l'exploitation. La dernière partie fait le
+bilan du chapitre et prépare la transition vers le chapitre~4, qui
+traitera spécifiquement de la sécurité applicative de cette couche
+d'agents.
+
+%% ────────────────────────────────────────────────────────────
+\section{Stratégie d'orchestration des variantes}
+\label{sec:strategie-orchestration}
+
+La thèse de cette partie tient en une phrase : il n'y a pas une
+orchestration de la couche d'agents, mais une stratégie qui choisit la
+variante adaptée à la phase du travail et au contexte d'intégration.
+Cette stratégie se lit sur trois plans complémentaires. Le premier est
+celui des \emph{surfaces} par lesquelles une demande entre dans le
+système. Le deuxième est celui du \emph{routage}, c'est-à-dire des
+signaux qui déterminent quelle variante répond à une demande donnée.
+Le troisième est celui de la \emph{mutualisation}, qui décrit ce que
+les variantes partagent en interne pour éviter la duplication. La
+partie se termine sur une discussion franche de la composabilité :
+ces surfaces fonctionnent aujourd'hui en parallèle, mais ne se
+composent pas encore en flux de bout en bout.
+
+\subsection{Trois surfaces d'interaction}
+\label{sec:surfaces}
+
+Le chapitre~2 a décrit en détail les variantes de l'agent~3 et les a
+relues à travers leurs profils d'intégration (voir la lecture
+comparative de la section~\ref{sec:comparatif}). Nous n'en reprenons
+ici que la structure d'ensemble, sous l'angle qui importe pour
+l'orchestration : chaque variante expose une \emph{surface
+d'interaction} distincte, c'est-à-dire une manière propre pour un
+acteur — humain ou logiciel — de déclencher une génération et d'en
+suivre le déroulement. Trois surfaces se dégagent, et elles ne sont
+pas redondantes : chacune répond à une posture humaine que les autres
+ne servent pas aussi bien.
+
+\paragraph{Surface conversationnelle.}
+La première surface est celle du dialogue. L'enseignant s'adresse à un
+agent dans un fil de discussion ; un protocole de streaming lui livre
+les artefacts au fur et à mesure de leur production, et les questions
+de l'agent prennent la forme d'interruptions structurées. Deux
+variantes l'incarnent : la voie conversationnelle à supervision
+\gls{llm} avec \emph{Human-in-the-Loop} (la variante
+\mcptool{syllabus-generator}, décrite à la section~\ref{sec:v1-op1})
+et la voie à sous-agents spécialistes (la variante \mcptool{deepagent}
+de la section~\ref{sec:v1-op2}). Toutes deux supposent un enseignant
+présent, prêt à clarifier une commande mal spécifiée ou à corriger une
+dérive en cours de génération. C'est la surface du
+\emph{co-construire à voix haute}.
+
+\paragraph{Surface atelier.}
+La deuxième surface renverse cette posture. Plutôt que de dialoguer,
+l'enseignant définit d'abord la structure — unités et activités — sous
+forme de brouillons, puis déclenche explicitement la génération par
+vagues. La variante d'atelier (le couple \mcptool{unit-bulk-supervisor}
+et \mcptool{unit-activity-generator}, décrit à la
+section~\ref{sec:v2-op1}) ne pratique ni streaming de tokens ni
+interruption en ligne : la progression d'une activité n'est exposée
+que par une machine d'état publique. C'est la surface de l'\emph{atelier
+rédactionnel asynchrone}, où l'opérateur décide quand lancer une vague
+et observe ensuite l'avancement à travers des statuts typés.
+
+\paragraph{Surface programmatique.}
+La troisième surface retire l'humain de la boucle d'exécution. Un
+système client déclenche la génération d'un syllabus par un appel
+programmatique, sans interface conversationnelle ni atelier. La
+variante d'orchestration par kit de développement (la variante
+\mcptool{sdk-orchestrator}, décrite à la section~\ref{sec:v2-op2})
+répond par construction à ce contrat : un appel non bloquant lance la
+génération en arrière-plan, et la seule observation disponible reste,
+là encore, la machine d'état publique. C'est la surface du
+\emph{déclenchement industriel}, qui sert une autre application, un
+traitement par lots ou une ingestion automatisée.
+
+Il est éclairant de relire ces trois surfaces à travers les axes de
+comparaison établis au chapitre~2 (voir la
+section~\ref{sec:axes-compar}), car la stratégie d'orchestration en
+hérite directement. La \emph{propriété de l'orchestration} les sépare
+nettement : sur la surface conversationnelle, un superviseur \gls{llm}
+décide à chaque tour du prochain pas, ce qui maximise la souplesse au
+prix de la reproductibilité ; sur les surfaces atelier et
+programmatique, l'enchaînement des activités est porté par du code
+déterministe, ce qui rend l'exécution reproductible mais ferme la porte
+à l'adaptation en ligne. La \emph{granularité de l'artefact
+inspectable} varie de la même façon : un flux de jetons éphémère sur la
+surface conversationnelle, des statuts typés et persistants sur les
+deux autres. Quant à la \emph{posture humaine} — enseignant présent,
+opérateur asynchrone, client sans humain — elle constitue la différence
+la plus visible, et c'est elle que le routage doit reconnaître en
+premier. Choisir une surface, c'est donc choisir d'un même geste un
+mode d'orchestration, un grain d'observation et une place pour
+l'humain ; ces trois choix sont solidaires et ne se recombinent pas
+librement.
+
+Ces trois surfaces ne sont pas trois implémentations concurrentes d'un
+même besoin : elles répondent à trois moments distincts du travail
+pédagogique. La surface conversationnelle sert l'exploration et la
+clarification ; la surface atelier sert la production maîtrisée d'un
+volume connu ; la surface programmatique sert l'intégration dans un
+système tiers. La stratégie d'orchestration ne consiste donc pas à
+préférer l'une à l'autre, mais à reconnaître laquelle convient à la
+situation présente — ce qui est précisément l'objet du routage.
+
+\subsection{Politique de routage}
+\label{sec:routage}
+
+Router, ici, signifie choisir la variante qui répondra à une demande.
+Il importe de préciser d'emblée le statut de ce qui suit : nous
+décrivons un \emph{cadre de décision}, et non un moteur de routage
+automatique. Aujourd'hui, le routage est très majoritairement
+\emph{explicite} — c'est l'utilisateur ou le système intégrateur qui
+choisit la surface, donc la variante. Le routage assisté, où le
+système suggérerait la variante adaptée, relève des perspectives et
+n'est pas implémenté. Cette honnêteté de cadrage est essentielle : il
+serait trompeur de présenter comme un algorithme sophistiqué ce qui
+est, pour l'essentiel, un choix laissé à l'acteur.
+
+Le choix de la variante se laisse néanmoins formaliser comme une
+fonction de trois familles de signaux :
+\[
+  \textsf{routage}(\textit{intention},\ \textit{contexte},\
+  \textit{contrat})\ \longrightarrow\ \textit{variante}.
+\]
+La première famille est l'\textbf{intention déclarée} : ce que
+l'acteur veut faire et, indissociablement, la surface qu'il choisit
+pour le faire. Un enseignant qui souhaite co-construire un syllabus en
+dialoguant ouvre un fil conversationnel ; un enseignant qui veut
+produire en bloc une série d'activités déjà structurées passe par
+l'atelier. L'intention et la surface sont, dans l'état actuel du
+système, presque confondues, et c'est ce qui rend le routage
+explicite : déclarer l'intention, c'est déjà choisir la variante.
+
+La deuxième famille est le \textbf{contexte de session}, qui module
+un choix à l'intérieur d'une surface donnée. La présence ou l'absence
+d'un syllabus déjà lié à la session en est l'exemple le plus net.
+Lorsque la génération d'activités s'inscrit dans un syllabus existant,
+l'agent outillé décrit au chapitre~2 (l'agent~2, décrit à la
+section~\ref{sec:agent2}) est pertinent : il peut consulter les
+activités sœurs et ancrer sa production dans le vocabulaire et les
+objectifs de l'unité. En l'absence d'un tel rattachement, le contexte
+ne fournit rien à ancrer, et l'on retombe naturellement sur le
+comportement du générateur sans outillage (l'agent~1, décrit à la
+section~\ref{sec:agent1}). Ce basculement reprend directement le
+constat de la valeur conditionnelle de l'ancrage établi à la
+section~\ref{sec:a1-vs-a2} : le contexte de session détermine s'il y a
+lieu de payer le coût de l'ancrage ou non.
+
+La troisième famille est le \textbf{contrat d'intégration}, qui
+distingue une sollicitation interactive d'un appel programmatique. Une
+interface utilisateur interactive ouvre la voie aux surfaces
+conversationnelle et atelier ; un appel programmatique impose, par
+construction, la surface programmatique. Le contrat n'est pas un
+simple détail d'implémentation : il conditionne la présence ou non
+d'un humain susceptible de répondre à une interruption, et donc la
+possibilité même d'un dialogue en cours de génération.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    font=\small,
+    sig/.style={rectangle, rounded corners=4pt, draw=myblue!60,
+      line width=0.6pt, fill=myblue!6, align=center,
+      text width=3.5cm, minimum height=1.1cm, inner sep=4pt},
+    dec/.style={diamond, aspect=2.2, draw=myblue!70, line width=0.7pt,
+      fill=myblue!10, align=center, text width=2.6cm, inner sep=1pt},
+    result/.style={rectangle, rounded corners=4pt, draw=gray!70,
+      line width=0.6pt, fill=gray!10, align=center,
+      text width=3.4cm, minimum height=1.1cm, inner sep=4pt},
+    arrow/.style={->, thick, -{Stealth[length=2.8mm]}, color=black!70}
+]
+\node[sig] (i) at (0,1.7)  {Intention déclarée\\\scriptsize(et surface choisie)};
+\node[sig] (c) at (0,0)    {Contexte de session\\\scriptsize(syllabus lié ?)};
+\node[sig] (k) at (0,-1.7) {Contrat d'intégration\\\scriptsize(interactif / programmatique)};
+\node[dec] (d) at (5.2,0)  {Cadre de\\décision};
+\node[result] (v) at (10.0,0) {Variante retenue\\\scriptsize(surface + agent)};
+\draw[arrow] (i.east) -- (d.north west);
+\draw[arrow] (c.east) -- (d.west);
+\draw[arrow] (k.east) -- (d.south west);
+\draw[arrow] (d.east) -- (v.west);
+\end{tikzpicture}
+\caption{Cadre de décision du routage : trois familles de signaux
+  (intention déclarée, contexte de session, contrat d'intégration)
+  déterminent la variante invoquée. Le cadre est aujourd'hui appliqué
+  de manière explicite par l'acteur ; sa formalisation prépare un
+  routage assisté laissé en perspective.}
+\label{fig:routage}
+\end{figure}
+
+La figure~\ref{fig:routage} résume ce cadre. Il faut en lire la
+flèche centrale pour ce qu'elle est : une décision aujourd'hui prise
+par un acteur humain ou par un système intégrateur, non par un
+composant logiciel dédié. Formaliser le routage comme une fonction
+présente malgré tout deux intérêts. D'une part, cela rend explicites
+les signaux qui \emph{devraient} gouverner le choix, ce qui aide à
+documenter et à enseigner l'usage de la couche d'agents. D'autre part,
+cela trace la voie d'un futur routage assisté : un composant pourrait,
+à terme, suggérer une variante à partir de l'intention exprimée et du
+contexte de session, sans retirer à l'enseignant la décision finale.
+Cette évolution est inscrite aux perspectives et n'est pas présentée
+ici comme un acquis.
+
+Quelques situations concrètes illustrent l'application de ce cadre. Un
+enseignant qui dispose d'une commande encore floue — une discipline, un
+niveau, mais aucun plan arrêté — a intérêt à ouvrir un fil
+conversationnel, où l'agent l'aidera à clarifier l'intention avant de
+produire : l'intention déclarée pointe vers la surface
+conversationnelle. Un enseignant qui a déjà saisi une douzaine
+d'activités en brouillon et souhaite les voir générées d'un bloc relève
+au contraire de la surface atelier, où il déclenchera une vague et en
+suivra l'avancement par statuts. Une application tierce qui veut
+produire un grand nombre de syllabus sans intervention humaine relève
+de la surface programmatique, par contrat d'intégration. Et, à
+l'intérieur d'une génération d'activités, le contexte de session
+tranche entre l'agent outillé et l'agent sans outillage selon que la
+demande s'inscrit ou non dans un syllabus lié — c'est-à-dire selon
+qu'il y a, ou non, un existant à consulter et à ne pas dupliquer.
+
+Ces signaux ne sont pas toujours indépendants, et leur articulation
+suit une forme de préséance. Le contrat d'intégration prime : un appel
+programmatique exclut par construction les surfaces interactives,
+quelle que soit l'intention exprimée, car aucun humain n'est disponible
+pour répondre à une interruption. Une fois la surface fixée par
+l'intention et le contrat, le contexte de session intervient à un grain
+plus fin, pour sélectionner l'agent et le degré d'ancrage. Reconnaître
+cette préséance n'ajoute aucune automatisation : elle décrit simplement
+l'ordre dans lequel les signaux contraignent le choix, et ce que
+devrait respecter un futur routage assisté pour rester cohérent avec
+l'usage actuel.
+
+\subsection{Sous-graphes communs et mutualisation}
+\label{sec:mutualisation}
+
+Si aucune variante n'est universelle, alors le système doit faire
+coexister plusieurs formes d'agents. La contrepartie technique de ce
+constat est claire : pour éviter de réécrire quatre fois la même
+logique, les variantes doivent partager leurs briques internes. La
+mutualisation des sous-graphes est le pendant concret de la conclusion
+« aucune variante n'est universelle » : la diversité s'exprime au
+niveau des surfaces et des postures, pas au niveau de chaque opération
+élémentaire.
+
+Trois briques se prêtent particulièrement à ce partage. La première
+est le \textbf{sous-graphe de génération d'activité}, qui enchaîne la
+planification d'une activité, sa rédaction, puis son indexation dans
+la base sémantique. Cette séquence constitue l'unité de travail
+élémentaire commune à la surface atelier et à la surface
+programmatique : dans les deux cas, le résultat n'est pas un flux
+conversationnel mais une activité persistée, dont l'avancement est
+exposé par la machine d'état publique. La voie conversationnelle à
+sous-agents mobilise la même logique à travers son sous-agent
+rédacteur. Extraire ce sous-graphe en une brique réutilisable évite
+que chaque surface réimplémente, à sa manière, la même chaîne
+planifier-rédiger-indexer, avec le risque de divergences silencieuses
+entre variantes.
+
+La deuxième brique est le \textbf{critic pédagogique}, ce sous-agent
+dont le rôle est d'examiner une production avant de la considérer comme
+acceptable, au regard de la barre de qualité définie pour l'agent
+concerné. Mutualiser le critic, c'est garantir qu'une activité produite
+par la surface atelier et la même activité produite par la surface
+programmatique sont jugées selon les mêmes exigences. C'est aussi
+concentrer en un seul point l'évolution de ces exigences : relever la
+barre de qualité ou affiner un critère se fait une fois, et bénéficie à
+toutes les surfaces qui invoquent le critic.
+
+La troisième brique est l'\textbf{accès aux outils de lecture et
+l'indexation}. La consultation des activités existantes, la recherche
+par similarité — notamment l'outil \mcptool{find_related_activities} —
+et l'écriture indexée constituent un socle partagé, exposé par le
+protocole d'accès aux données et soumis au principe du moindre
+privilège rappelé à la section~\ref{sec:moindre-privilege}. Ce socle
+est ce qui rend l'ancrage possible quel que soit le point d'entrée :
+que la demande arrive par dialogue, par atelier ou par appel
+programmatique, c'est le même catalogue d'outils, soumis aux mêmes
+restrictions, qui sert de pont vers l'existant. Mutualiser cet accès,
+c'est aussi mutualiser la discipline de sécurité qui l'encadre — un
+point sur lequel le chapitre~4 reviendra.
+
+L'intérêt de cette mutualisation est double. Sur le plan de la
+maintenance, factoriser un sous-graphe de rédaction ou un critic
+partagé réduit la surface de code à faire évoluer : une amélioration
+de l'anti-redondance ou de la barre de qualité profite simultanément
+à plusieurs surfaces. Sur le plan de la cohérence, le partage garantit
+qu'une même demande, traitée par des surfaces différentes, s'appuie
+sur les mêmes garde-fous d'ancrage et de qualité. La diversité des
+variantes ne se paie donc pas en divergence de comportement sur les
+opérations de base : elle se concentre là où elle apporte de la valeur,
+c'est-à-dire dans la posture d'interaction et la propriété de
+l'orchestration.
+
+Il faut toutefois mesurer la portée de cette mutualisation. Partager
+un sous-graphe n'est pas composer les surfaces entre elles : c'est
+réutiliser une brique \emph{à l'intérieur} d'une variante donnée. La
+partie sur la composabilité examinera précisément ce que la
+mutualisation ne règle pas, à savoir le chaînage des surfaces en un
+flux unique. Auparavant, un cas particulier de mutualisation mérite
+d'être traité à part, car il touche directement au coût de
+fonctionnement : le partage du contexte de session.
+
+\subsection{Mutualisation du contexte et moment de l'ancrage}
+\label{sec:cache-contexte}
+
+La lecture comparative du chapitre~2 a laissé une question ouverte,
+qu'il revient à ce chapitre de reprendre. L'ancrage d'une activité sur
+l'existant a un coût observable — de l'ordre de plusieurs dizaines de
+pour cent de latence supplémentaire et un volume de jetons d'entrée
+sensiblement accru — et ce coût est entièrement imputable à la phase
+de lecture qui précède la génération (voir la
+section~\ref{sec:a1-vs-a2}). La question n'est pas de savoir s'il faut
+payer ce coût, puisque l'ancrage conditionne la non-redondance ; elle
+est de savoir \emph{quand} le payer : à chaque génération, ou une fois
+pour un ensemble de générations relevant d'une même session.
+
+Dans l'état actuel de la conception, la lecture d'ancrage est
+recalculée \emph{à chaque génération}. Ce choix est simple et correct :
+chaque activité produite consulte l'existant au moment où elle est
+produite, ce qui garantit qu'elle s'appuie sur l'état le plus récent du
+syllabus. Il a néanmoins une conséquence visible lorsqu'une même
+session enchaîne plusieurs générations sur le même syllabus — cas
+fréquent sur la surface atelier : le contexte de lecture, pour
+l'essentiel identique d'une activité à l'autre, est reconstitué autant
+de fois qu'il y a de générations, et le tarif de l'ancrage est acquitté
+à répétition.
+
+Le levier architectural correspondant consiste à \emph{mutualiser le
+contexte de session} : lire une fois le contexte pertinent d'un
+syllabus — activités sœurs, plan d'ensemble, objectifs — puis le
+réutiliser pour les générations successives d'une même session, plutôt
+que de le reconstruire à chaque fois. Ce levier prolonge directement la
+logique de routage exposée plus haut : on ne paie l'ancrage que
+lorsqu'il apporte de la valeur, et, idéalement, on ne le paie qu'une
+fois par session cohérente plutôt qu'une fois par activité. Il s'agit
+d'une mise en cache du contexte au niveau de la couche d'agents, et non
+d'un mécanisme de stockage particulier : la notion reste ici
+architecturale.
+
+Un tel partage soulève en retour une question de fraîcheur. Un contexte
+mutualisé peut se périmer si des activités sont créées ou modifiées en
+cours de session ; sa réutilisation doit donc être bornée par une
+invalidation, naturellement adossée aux événements qui font évoluer le
+syllabus — transitions de la machine d'état des activités, nouvelles
+indexations. L'identifiant de fil introduit pour l'observabilité offre
+d'ailleurs une portée naturelle à ce contexte partagé : il délimite la
+session à l'intérieur de laquelle le contexte peut être réutilisé sans
+risque d'incohérence. Nous présentons ce levier comme une
+\emph{perspective} cohérente avec la stratégie d'orchestration, et non
+comme un mécanisme déjà en place : la conception actuelle recalcule
+l'ancrage, et la mutualisation du contexte de session reste à
+concevoir.
+
+\subsection{Composabilité limitée}
+\label{sec:composabilite}
+
+Une lecture honnête de la conception actuelle impose de reconnaître
+une limite : les surfaces sont \emph{parallèles mais non composées}.
+Chacune offre un chemin complet, de la demande au résultat, mais
+aucune ne s'enchaîne automatiquement à une autre. Deux exemples
+concrets le montrent. Un déclenchement par la surface programmatique
+produit un syllabus complet, mais n'ouvre pas ensuite, de lui-même, un
+atelier de révision interactive : si l'enseignant souhaite reprendre
+le résultat à la main, il doit le rouvrir explicitement dans la
+surface atelier. Symétriquement, une session conversationnelle ne
+verse pas automatiquement son résultat dans un atelier de production
+par lots : le passage d'une surface à l'autre reste un geste manuel.
+
+La cause de cette limite est structurelle plus qu'accidentelle :
+il n'existe pas, à ce jour, de graphe global unique qui porterait
+l'état d'un travail à travers les surfaces. Chaque surface gère son
+propre état — le fil de conversation pour les voies interactives, la
+machine d'état des activités pour les voies atelier et programmatique —
+sans qu'un orchestrateur de niveau supérieur ne relie ces états en une
+trajectoire continue. La conséquence est qu'un travail entamé sur une
+surface ne peut être prolongé sur une autre que par une intervention
+explicite, qui recommence depuis l'état observable de la surface
+d'arrivée.
+
+Nous présentons ce point comme une limite assumée, et non comme une
+promesse non tenue. Composer les surfaces en flux de bout en bout —
+par exemple, déclencher programmatiquement une génération puis basculer
+en atelier de révision sans perte d'état — supposerait un orchestrateur
+global et un état partagé que la conception actuelle ne fournit pas. Ce
+besoin est réel et il est inscrit aux perspectives ; il rejoint la
+discussion des limites de la partie consacrée à la fiabilisation, dans
+la troisième partie de ce chapitre. Le reconnaître clairement vaut
+mieux que de laisser croire à une composabilité qui n'existe pas
+encore.
+
+On peut esquisser, sans entrer dans l'implémentation, ce qu'exigerait
+une telle composition. Il faudrait d'abord un \emph{état partagé} qui
+survive au passage d'une surface à l'autre, de sorte qu'un travail
+entamé programmatiquement conserve son identité et son contenu
+lorsqu'il est repris en atelier. Il faudrait ensuite un \emph{contrat
+de transfert} explicite entre surfaces, décrivant ce qu'une surface
+remet à la suivante et dans quel état le travail doit se trouver pour
+être repris sans ambiguïté. Il faudrait enfin un \emph{orchestrateur de
+niveau supérieur} capable d'enchaîner ces transferts en respectant les
+postures humaines de chaque surface — par exemple, ne basculer en
+révision interactive que si un humain est effectivement disponible. Ces
+trois éléments dessinent un programme de travail cohérent ; la
+conception actuelle, qui privilégie des surfaces autonomes et bien
+délimitées, en constitue une fondation raisonnable plutôt qu'un
+obstacle.
+
+\subsection{Synthèse : une stratégie, non une orchestration unique}
+\label{sec:synthese-orchestration}
+
+Les quatre plans qui précèdent dessinent ensemble une posture de
+conception cohérente, qu'il convient de résumer avant d'aborder
+l'observabilité. La stratégie d'orchestration ne cherche pas à fondre
+les variantes en un orchestrateur universel : elle les fait coexister
+en reconnaissant que chacune sert une posture d'usage distincte. Les
+\emph{surfaces} encapsulent ces postures ; le \emph{routage}, explicite
+aujourd'hui, choisit la surface et la variante à partir de l'intention,
+du contexte et du contrat ; la \emph{mutualisation} garantit que cette
+diversité de surfaces ne se paie pas en duplication des opérations de
+base ni en divergence des garde-fous de qualité et d'ancrage ; la
+\emph{composabilité}, enfin, demeure limitée et constitue le principal
+chantier ouvert.
+
+Cette posture a une vertu méthodologique : elle distingue nettement ce
+qui relève d'un choix de conception assumé de ce qui relève d'une
+limite à lever. Faire coexister plusieurs surfaces est un choix, motivé
+par la pluralité réelle des usages de SprintUp. Ne pas les composer
+encore est une limite, dont la résolution suppose un état partagé et un
+orchestrateur de niveau supérieur. Tenir ces deux registres séparés —
+le choix et la limite — est précisément ce qui permet de défendre la
+conception sans la survendre. C'est aussi ce qui prépare la partie
+suivante : une stratégie que l'on assume doit pouvoir être observée, de
+sorte que ses choix comme ses limites soient vérifiables en
+fonctionnement, et non seulement affirmés sur le papier.
+
+%% ────────────────────────────────────────────────────────────
+\section{Observabilité de la couche d'agents}
+\label{sec:observabilite}
+
+Une stratégie d'orchestration n'est défendable que si l'on peut
+observer ce qu'elle produit en fonctionnement. Observer, ici, ne
+signifie pas déployer un outillage de supervision particulier — le
+choix d'un tel outillage sort du périmètre de la couche d'agents — mais
+identifier \emph{ce qui} est observable, à quel niveau d'abstraction,
+et comment relier ces observations entre elles. Cette partie décrit
+trois artefacts d'observation indépendants de toute technologie,
+montre comment un identifiant de fil les relie, énumère les mesures
+opérationnelles utiles à suivre dans le temps, et propose un schéma de
+diagnostic par remontée. Conformément à la discipline adoptée dans
+tout le chapitre, nous distinguons à chaque étape ce qui est
+\emph{déjà conçu et en place} de ce qui reste \emph{à raffiner}.
+
+\subsection{Trois artefacts d'observation}
+\label{sec:artefacts}
+
+Trois artefacts d'observation coexistent et se complètent. Pris
+séparément, chacun ne donne qu'une vue partielle ; c'est leur
+corrélation qui rend la couche d'agents intelligible.
+
+\paragraph{Traces d'exécution.}
+Le premier artefact est la trace d'exécution émise par les
+superviseurs et les sous-agents. Une telle trace est une séquence de
+phases et d'appels d'outils : sollicitation d'un outil de lecture,
+délégation à un sous-agent, passage du planificateur au rédacteur,
+appel du critic, et ainsi de suite. Ce niveau de détail est
+\emph{en place} : la conception des variantes, en particulier les
+voies à supervision \gls{llm}, produit naturellement ces traces, et
+elles sont la seule fenêtre sur le raisonnement interne des surfaces
+conversationnelles, qui n'exposent pas de machine d'état publique. La
+trace est l'artefact le plus riche, mais aussi le plus volumineux et
+le moins structuré : elle se lit a posteriori, pour comprendre
+\emph{comment} un résultat a été obtenu.
+
+La richesse de la trace est à la fois sa force et sa difficulté. Elle
+permet de reconstituer le cheminement exact d'une variante — quel
+outil a été appelé, dans quel ordre, avec quel effet — ce qui est
+indispensable pour les surfaces conversationnelles, où nul état public
+ne résume l'avancement. Mais cette richesse a un coût d'interprétation :
+une trace n'est pas un résumé, c'est un journal détaillé, et en tirer
+un diagnostic suppose de savoir quoi y chercher. C'est pourquoi la
+trace gagne à être lue \emph{en regard} des deux autres artefacts
+plutôt qu'isolément, comme la suite de cette partie le montre.
+
+\paragraph{Machine d'état publique des activités.}
+Le deuxième artefact est la machine d'état publique des activités de
+la Version~2, déjà décrite et illustrée au chapitre~2 (voir la
+figure~\ref{fig:v2-status}). Une activité y progresse à travers une
+suite d'états — \mcptool{draft}, \mcptool{queued}, \mcptool{searching},
+\mcptool{generating}, \mcptool{ready} — assortie d'états terminaux
+d'échec — \mcptool{failed} et \mcptool{blocked}. Cet artefact présente
+une propriété décisive pour l'observabilité : il fait partie du
+\emph{contrat public} du système. Un client peut suivre l'avancement
+d'une génération en lisant uniquement ces états, sans interpréter le
+moindre protocole de streaming ni accéder au raisonnement interne de
+l'agent. La machine d'état est ainsi l'artefact le plus pauvre en
+détail mais le plus stable et le plus universellement consommable ;
+elle est \emph{en place} pour les voies atelier et programmatique.
+
+Cette pauvreté apparente est en réalité une vertu d'interface. Parce
+qu'elle ne dépend ni du modèle de langage employé, ni du détail de
+l'orchestration interne, la machine d'état offre une surface
+d'observation stable dans le temps : un client construit sur ces états
+ne se brise pas lorsque le raisonnement interne d'une variante évolue.
+Elle constitue ainsi le point d'observation de référence pour quiconque
+consomme la couche d'agents sans en connaître les rouages — et, à ce
+titre, le premier artefact que l'on consulte lors d'un diagnostic.
+
+\paragraph{Mesures opérationnelles.}
+Le troisième artefact est l'ensemble des mesures opérationnelles —
+latence, volume de jetons, fréquence d'erreurs — qui caractérisent une
+exécution indépendamment de la variante. Contrairement aux deux
+précédents, cet artefact relève aujourd'hui surtout du
+\emph{préconisé} : l'architecture permet de produire et de collecter
+ces grandeurs, mais leur agrégation systématique dans un dispositif de
+suivi continu reste à construire. Nous le présentons donc comme un
+\emph{dispositif d'observation à mettre en place}, et non comme un
+système de supervision déjà déployé. Les mesures elles-mêmes sont
+détaillées plus loin, dans la partie consacrée aux grandeurs utiles.
+
+La complémentarité de ces trois artefacts tient à leurs niveaux
+d'abstraction. La machine d'état répond à la question « où en est ce
+travail ? » ; la trace répond à « par quel cheminement en est-il
+arrivé là ? » ; les mesures répondent à « à quel coût, et dans quelles
+marges de temps ? ». Aucun ne se substitue aux autres, et c'est leur
+mise en regard qui permet de raisonner sur l'architecture.
+
+\subsection{Corrélation par identifiant de fil}
+\label{sec:correlation}
+
+Pour relier ces trois artefacts, encore faut-il une clé commune. Cette
+clé est un \emph{identifiant de fil} (ou identifiant de conversation),
+attribué à chaque travail entrant dans le système. Le même
+identifiant accompagne la demande de l'acteur, la trace d'exécution
+émise par les agents, et les transitions d'état des activités
+produites. Il joue le rôle de \emph{fil conducteur} : à partir d'un
+seul identifiant, on peut remonter d'un symptôme observable jusqu'au
+détail du raisonnement qui l'a produit.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    font=\small,
+    lane/.style={font=\small\bfseries, align=right, text width=3.0cm},
+    ev/.style={rectangle, rounded corners=3pt, draw=myblue!60,
+      line width=0.5pt, fill=myblue!8, align=center,
+      font=\footnotesize, minimum height=0.8cm, inner sep=3pt},
+    st/.style={rectangle, rounded corners=3pt, draw=gray!70,
+      line width=0.5pt, fill=gray!12, align=center,
+      font=\footnotesize\ttfamily, minimum width=1.5cm,
+      minimum height=0.7cm, inner sep=2pt},
+    axis/.style={->, thick, -{Stealth[length=2.6mm]}, color=black!55},
+    link/.style={dashed, color=black!35, line width=0.4pt}
+]
+%% --- trois couloirs ---
+\node[lane] (l1) at (-0.3,2.4) {Demande\\acteur};
+\node[lane] (l2) at (-0.3,1.0) {Trace\\d'exécution};
+\node[lane] (l3) at (-0.3,-0.6) {Machine\\d'état};
+
+%% --- couloir 1 : demande ---
+\node[ev] (req) at (2.2,2.4) {requête};
+
+%% --- couloir 2 : trace LLM ---
+\node[ev] (t1) at (2.2,1.0) {intake};
+\node[ev] (t2) at (4.6,1.0) {recherche};
+\node[ev] (t3) at (7.0,1.0) {rédaction};
+\node[ev] (t4) at (9.4,1.0) {critic};
+
+%% --- couloir 3 : états ---
+\node[st] (s1) at (2.2,-0.6) {queued};
+\node[st] (s2) at (4.6,-0.6) {searching};
+\node[st] (s3) at (7.0,-0.6) {generating};
+\node[st] (s4) at (9.7,-0.6) {ready};
+
+%% --- axe du temps ---
+\draw[axis] (1.0,-1.6) -- (10.6,-1.6) node[right, font=\footnotesize] {temps};
+
+%% --- liens verticaux de corrélation (même thread) ---
+\draw[link] (t1) -- (s1);
+\draw[link] (t2) -- (s2);
+\draw[link] (t3) -- (s3);
+\draw[link] (t4.south) -- (s4.north);
+\draw[link] (req) -- (t1);
+
+\node[font=\footnotesize\itshape, color=black!60, align=center]
+  at (5.8,3.2) {un même identifiant de fil relie les trois couloirs};
+\end{tikzpicture}
+\caption{Chronologie d'un fil. Une demande unique se déploie sur trois
+  plans corrélés par un même identifiant de fil : la requête de
+  l'acteur, la trace d'exécution (phases et appels d'outils) et la
+  machine d'état publique des activités. La superposition permet de
+  rattacher chaque état observable à la phase qui l'a produit.}
+\label{fig:thread-timeline}
+\end{figure}
+
+La figure~\ref{fig:thread-timeline} illustre cette corrélation sous la
+forme d'une chronologie. Trois couloirs y avancent en parallèle le
+long d'un même axe de temps. Le premier porte la demande de l'acteur.
+Le deuxième déroule la trace d'exécution — intake, recherche,
+rédaction, critic — c'est-à-dire le raisonnement interne de la
+variante. Le troisième suit la machine d'état publique, dont les
+transitions (\mcptool{queued}, \mcptool{searching}, \mcptool{generating},
+\mcptool{ready}) reflètent, vues de l'extérieur, l'avancement du
+travail. L'identifiant de fil, partagé par les trois couloirs, autorise
+la lecture verticale : à un état public donné correspond une phase de
+la trace, et à cette phase un coût et une durée mesurables. C'est cette
+lecture verticale qui transforme trois flux d'information séparés en un
+récit unique et exploitable d'un travail.
+
+Il convient de situer le statut de ce dispositif. L'existence de
+traces détaillées au niveau des agents et celle d'une machine d'état
+publique sont \emph{en place} : ce sont des propriétés de conception
+des variantes décrites au chapitre~2. La généralisation d'un
+identifiant de fil unique comme clé de corrélation systématique, à
+travers tous les artefacts et toutes les surfaces, relève en revanche
+du \emph{préconisé} : le principe est posé, mais son application
+uniforme demande un travail d'instrumentation qui reste à mener.
+
+\subsection{Mesures opérationnelles utiles}
+\label{sec:metriques}
+
+Au-delà des artefacts qualitatifs, quelques grandeurs méritent d'être
+suivies dans le temps, car elles éclairent les compromis propres à
+chaque variante. L'argument n'est pas dans leur valeur absolue : il est
+dans leur \emph{évolution} et dans ce qu'elle révèle des arbitrages de
+conception. Nous en retenons quatre.
+
+\begin{itemize}
+  \item \textbf{Latence de bout en bout, par variante.} Le temps qui
+    sépare le déclenchement d'un travail de la disponibilité de son
+    résultat. Cette grandeur ne se compare pas d'une variante à
+    l'autre dans l'absolu : une surface conversationnelle vise une
+    attente de l'ordre de la minute et tolère le streaming, là où une
+    surface programmatique répond de manière non bloquante et se
+    qualifie plutôt par le débit d'une vague. La latence éclaire
+    surtout l'adéquation d'une variante à l'enveloppe d'usage qu'elle
+    sert, telle qu'elle a été décrite à la section~\ref{sec:observations}.
+  \item \textbf{Volume de jetons consommés par exécution.} La taille
+    du contexte mobilisé pour produire un résultat. Le chapitre~2 a
+    montré, à titre d'ordre de grandeur, que l'ancrage d'une activité
+    sur l'existant accroît sensiblement le volume de jetons d'entrée
+    par rapport à une génération non ancrée (voir la
+    section~\ref{sec:a1-vs-a2}). Suivre cette grandeur, c'est mesurer
+    le \emph{tarif de l'ancrage} et vérifier qu'il n'est payé que
+    lorsqu'il apporte de la valeur.
+  \item \textbf{Fréquence et nature des erreurs d'accès aux outils.}
+    Les délais dépassés et les échecs d'appel aux outils de lecture ou
+    d'écriture. Cette grandeur renseigne sur la robustesse de la
+    couche d'accès aux données et, indirectement, sur la part des
+    échecs de génération imputable non au raisonnement de l'agent mais
+    à l'indisponibilité d'une ressource.
+  \item \textbf{Temps passé par une activité dans chaque état.} La
+    durée de séjour d'une activité dans les états de la machine
+    publique — combien de temps en \mcptool{queued}, en
+    \mcptool{searching}, en \mcptool{generating}. Cette grandeur
+    localise les goulets d'étranglement le long du flux nominal et
+    distingue, par exemple, une attente d'ordonnancement d'une phase
+    de recherche anormalement longue.
+\end{itemize}
+
+Ces grandeurs reprennent et prolongent les ordres de grandeur de la
+lecture comparative du chapitre~2. Il faut en rappeler le statut :
+l'objectif n'est pas de produire un classement chiffré des variantes,
+mais de \emph{comprendre les compromis} — latence contre ancrage,
+débit contre contrôlabilité, richesse de la trace contre stabilité du
+contrat public. Suivre ces mesures dans le temps est précisément ce
+qui permettrait de faire de ces compromis un objet de décision, et non
+une simple intuition de conception.
+
+Deux précautions encadrent l'usage de ces grandeurs. La première est
+de ne pas confondre une mesure ponctuelle avec une tendance : une
+latence observée sur quelques exécutions ne dit rien de fiable tant
+qu'elle n'est pas suivie dans la durée, et c'est précisément le suivi
+continu — aujourd'hui à mettre en place — qui donnerait son sens à ces
+chiffres. La seconde est de relier chaque grandeur à l'artefact qui
+l'explique : une latence anormale renvoie à la trace pour en localiser
+la phase coûteuse, un temps de séjour excessif dans un état renvoie à
+la machine d'état pour en circonscrire l'étape. Les mesures, en somme,
+ne se suffisent pas à elles-mêmes : elles signalent où regarder, et ce
+sont les deux autres artefacts qui disent quoi corriger.
+
+\subsection{Diagnostic par remontée}
+\label{sec:diagnostic}
+
+Les trois artefacts et leur clé de corrélation prennent tout leur sens
+dans une situation concrète : le diagnostic d'un symptôme. Le schéma
+proposé est une remontée à trois étages, de la surface observable vers
+la cause architecturale. Prenons un symptôme typique : une activité
+demeure longtemps dans l'état \mcptool{queued}.
+
+Le premier étage consiste à \textbf{inspecter l'état public}. La
+machine d'état indique sans ambiguïté que l'activité n'a pas quitté la
+file d'attente : le travail n'a pas échoué, il n'a pas non plus
+progressé. Cette observation, à elle seule, oriente déjà le diagnostic
+en écartant un échec franc (\mcptool{failed}) ou un blocage propagé
+par dépendance (\mcptool{blocked}).
+
+Le deuxième étage consiste à \textbf{inspecter la trace du fil}
+correspondant. En suivant l'identifiant de fil, on relie l'activité
+bloquée à la séquence de phases qui la concerne, et l'on observe à
+quel moment la progression s'interrompt : la phase de recherche
+a-t-elle été lancée puis suspendue ? un appel d'outil est-il resté
+sans réponse ? l'ordonnancement a-t-il simplement différé le passage à
+l'état suivant ?
+
+Le troisième étage consiste à \textbf{raisonner sur l'architecture}.
+Selon ce que révèle la trace, l'explication se rattache à un choix de
+conception identifiable : un sous-graphe de recherche
+particulièrement long sur un syllabus volumineux, un plafond de
+parallélisme imposé par l'ordonnanceur qui retient les activités en
+file, ou un délai d'accès à un outil de lecture. Le diagnostic ne
+s'arrête pas à constater le symptôme : il le rattache à une propriété
+de l'architecture, ce qui ouvre la voie à une correction raisonnée.
+
+Le même patron s'applique à d'autres symptômes. Supposons une hausse
+de la fréquence des erreurs d'accès aux outils sur une période donnée.
+L'état public, là encore, fournit le premier indice : les activités
+concernées basculent en échec à la phase de recherche plutôt que de
+progresser. La trace du fil précise ensuite la nature de l'erreur — un
+délai dépassé, un appel resté sans réponse, plutôt qu'un refus de
+raisonnement de l'agent. Le raisonnement architectural conclut enfin
+en distinguant ce qui relève de la couche d'accès aux données de ce qui
+relève de la logique de l'agent : un échec concentré sur un même outil
+de lecture oriente vers la robustesse de cet accès, et non vers une
+révision du prompt de l'agent. La valeur du patron tient à cette
+capacité de \emph{séparer les causes} — raisonnement, accès aux
+données, ordonnancement — au lieu de les confondre dans un symptôme
+global.
+
+Ce schéma reste, à ce stade, un \emph{patron conceptuel} : il décrit
+la manière de raisonner, non un tableau de bord prêt à l'emploi. La
+capacité d'inspecter l'état public et la trace d'un fil est en place ;
+l'outillage qui rendrait cette remontée immédiate et systématique —
+recherche par identifiant, mise en regard automatique des trois
+artefacts — reste à construire. C'est l'une des limites que la partie
+suivante examine.
+
+\subsection{Ce que l'observabilité permet de défendre}
+\label{sec:synthese-observabilite}
+
+Il vaut la peine de récapituler ce que ce modèle d'observabilité
+autorise, en maintenant la distinction entre l'acquis et le projeté.
+Sont \emph{en place}, parce qu'ils découlent directement de la
+conception décrite au chapitre~2 : l'existence de traces détaillées au
+niveau des superviseurs et des sous-agents ; la machine d'état publique
+des activités comme contrat d'observation stable ; et la possibilité,
+pour un fil donné, de mettre en regard un état public et la phase de
+trace correspondante. Ces propriétés suffisent à raisonner, au cas par
+cas, sur un comportement observé et à en remonter la cause.
+
+Relèvent en revanche du \emph{préconisé} : la généralisation d'un
+identifiant de fil unique comme clé de corrélation systématique ; la
+collecte continue et l'agrégation des mesures opérationnelles ; et
+l'outillage qui transformerait le diagnostic par remontée en un geste
+immédiat plutôt qu'en une investigation manuelle. La frontière entre
+ces deux registres n'est pas une faiblesse à dissimuler : c'est la
+description exacte de ce sur quoi une soutenance peut s'appuyer sans
+exagération. Affirmer que la couche d'agents \emph{peut} être observée,
+et préciser à quel prix elle le serait de manière systématique, est
+plus solide que de revendiquer une supervision qui n'existe pas. Cette
+honnêteté de cadrage conduit naturellement à l'examen des limites, qui
+fait l'objet de la partie suivante.
+
+%% ────────────────────────────────────────────────────────────
+\section{Limites actuelles et besoins de fiabilisation}
+\label{sec:limites}
+
+Les deux premières parties de ce chapitre ont décrit une stratégie
+d'orchestration et un dispositif d'observabilité. Il serait malhonnête
+de les présenter comme un système pleinement mûr. Cette partie dresse,
+au niveau de l'architecture et non de l'exploitation, un bilan lucide
+des limites actuelles et des besoins de fiabilisation. Trois familles
+de limites se dégagent : celles du routage et de la composition,
+celles de la gestion d'état et de la reprise, et celles de
+l'observabilité et des métriques.
+
+\subsection{Limites du routage et de la composition}
+\label{sec:limites-routage}
+
+La première limite a déjà été énoncée dans la partie sur
+l'orchestration, et il convient de la reprendre comme telle. Le
+routage demeure \emph{explicite et manuel} : aucun composant ne
+combine automatiquement les signaux d'intention, de contexte et de
+contrat pour suggérer ou choisir une variante. Le cadre de décision
+formalisé à la section~\ref{sec:routage} décrit comment le choix
+\emph{devrait} se faire, mais c'est aujourd'hui l'acteur — humain ou
+système intégrateur — qui l'exécute. Un routage assisté, qui
+proposerait une variante sans confisquer la décision finale, reste une
+perspective.
+
+La seconde limite est celle de la composition. Les surfaces —
+conversationnelle, atelier, programmatique — ne se chaînent pas en
+flux à plusieurs étapes. Il n'existe pas d'orchestrateur global qui
+enchaînerait, de manière sûre, un déclenchement programmatique suivi
+d'une révision en atelier, ou une exploration conversationnelle suivie
+d'une production par lots. Comme nous l'avons noté à la
+section~\ref{sec:composabilite}, la cause est l'absence d'un graphe
+unique portant l'état d'un travail à travers les surfaces. Tant que
+cet état reste cloisonné par surface, la composition demeure un geste
+manuel plutôt qu'une trajectoire orchestrée.
+
+Ces deux limites se rejoignent dans un même manque : celui d'un niveau
+d'orchestration qui se situerait \emph{au-dessus} des variantes plutôt
+qu'à l'intérieur de chacune. Un routage assisté et une composition de
+surfaces sont en effet deux facettes d'un même besoin — décider, à
+partir de signaux, quelle variante invoquer, puis enchaîner plusieurs
+invocations en une trajectoire cohérente. Les énoncer ensemble n'est
+pas un aveu de faiblesse : c'est délimiter avec précision le périmètre
+de ce qui a été conçu (des surfaces autonomes et solides) et de ce qui
+reste à concevoir (leur coordination de niveau supérieur).
+
+\subsection{Limites de la gestion d'état et de la reprise}
+\label{sec:limites-etat}
+
+La fiabilité d'une couche d'agents se mesure aussi à sa capacité de
+reprendre un travail interrompu. Sur ce plan, la conception actuelle
+offre des possibilités réelles mais inégales selon la surface, qu'il
+faut décrire sans les surestimer.
+
+Pour les voies conversationnelles, l'état d'un travail est porté par
+l'état du graphe de dialogue : une session interrompue peut, en
+principe, être reprise à partir de l'état conservé du fil, puisque le
+raisonnement progresse par tours successifs dont l'état est
+explicitement maintenu. Pour les voies atelier et programmatique, la
+reprise s'appuie sur la machine d'état des activités : une activité en
+échec peut être remise en file pour une nouvelle tentative, et la
+propagation d'un échec aux activités dépendantes est matérialisée par
+un état terminal dédié, comme l'illustre la figure~\ref{fig:v2-status}.
+La granularité de la reprise est ici l'activité : on relance ce qui a
+échoué, sans nécessairement rejouer ce qui avait réussi.
+
+Ces mécanismes ne constituent pas pour autant une reprise
+automatique et complète. En particulier, il n'existe pas de mécanisme
+de \emph{retour arrière} automatique pour une chaîne d'actions
+complexe : annuler proprement un ensemble d'effets partiellement
+appliqués, lorsqu'un travail composite échoue à mi-parcours, n'est pas
+pris en charge de bout en bout et resterait à concevoir. La reprise
+actuelle est, pour l'essentiel, une reprise \emph{en avant} — relancer
+ce qui a échoué — et non une annulation transactionnelle de ce qui a
+déjà été produit. Ce constat n'est pas un défaut surprenant pour un
+travail de cette nature ; il délimite simplement ce qui relève de
+l'ingénierie ultérieure.
+
+\subsection{Limites de l'observabilité et des métriques}
+\label{sec:limites-observabilite}
+
+La dernière famille de limites concerne l'observabilité elle-même. Il
+faut le reconnaître nettement : l'observabilité actuelle n'est pas
+\emph{industrialisée}. Il n'existe pas de système complet et automatisé
+de supervision, avec tableaux de bord agrégés et alertes, qui
+suivrait en continu les grandeurs énumérées à la
+section~\ref{sec:metriques}. L'architecture rend ce suivi
+\emph{possible} — les artefacts existent, la clé de corrélation est
+identifiée — mais le travail qui le rendrait systématique reste à
+faire.
+
+Le mot « industrialiser » mérite d'être précisé, pour ne pas déborder
+sur un terrain qui n'est pas celui de ce travail. Il ne s'agit pas ici
+de choisir un outillage de supervision ni d'en décrire l'exploitation :
+ces questions relèvent de l'ingénierie de mise en {\oe}uvre et non de
+la conception de la couche d'agents. Il s'agit, plus modestement, de
+constater que les artefacts d'observation existent à l'état de
+\emph{capacité} — on peut, au cas par cas, lire un état, suivre une
+trace, calculer une mesure — sans qu'une collecte régulière et une mise
+en regard automatique n'en fassent encore un instrument de pilotage.
+Combler cet écart est un travail d'instrumentation identifié, pas une
+lacune de conception.
+
+Cette limite n'est pas isolée : elle prolonge celle du diagnostic par
+remontée, dont nous avons dit qu'il demeure un patron conceptuel
+faute d'outillage dédié. Elle prépare aussi une articulation naturelle
+avec le chapitre~4. La journalisation, l'auditabilité et la traçabilité
+ne sont pas seulement des instruments d'exploitation : ce sont aussi
+des exigences de sécurité. Savoir qui a déclenché quelle variante, sur
+quel périmètre, et pouvoir le retracer de manière fiable, relève autant
+de l'observabilité que du contrôle d'accès. Industrialiser
+l'observabilité et instruire la sécurité applicative sont ainsi deux
+chantiers qui se renforcent mutuellement, et le second fera l'objet du
+chapitre suivant.
+
+En somme, ce que ce chapitre décrit est une \emph{base architecturale
+solide} : des surfaces clairement caractérisées, un cadre de décision
+explicite, des artefacts d'observation complémentaires et une clé de
+corrélation identifiée. Ce n'est pas un système entièrement mûri et
+durci pour une exploitation à grande échelle — ce qui est normal, et
+même attendu, pour un projet de fin d'études. Nommer cette distinction
+n'affaiblit pas la conception : c'est au contraire la condition d'une
+défense honnête de ses apports comme de ses limites.
+
+%% ────────────────────────────────────────────────────────────
+\section{Bilan du chapitre et transition vers la sécurité applicative}
+\label{sec:ch3-bilan}
+
+Ce chapitre a prolongé la lecture comparative du chapitre~2 sur trois
+plans. Là où le chapitre~2 comparait des formes d'agents prises une à
+une, ce chapitre en a organisé la coexistence.
+
+Le premier apport est une \textbf{vue stratégique} de la manière dont
+les variantes coexistent et sont choisies. En distinguant trois
+surfaces d'interaction, en formalisant le routage comme une fonction
+de l'intention, du contexte et du contrat, et en identifiant les
+sous-graphes mutualisés, le chapitre a montré que la diversité des
+variantes n'est pas un éparpillement mais une réponse organisée à des
+postures d'usage distinctes. Il a aussi reconnu, sans détour, la
+composabilité encore limitée de ces surfaces.
+
+Le deuxième apport est un \textbf{modèle conceptuel d'observabilité},
+fondé sur trois artefacts — traces d'exécution, machine d'état publique,
+mesures opérationnelles — reliés par un identifiant de fil. Ce modèle
+fournit un langage pour raisonner sur le comportement de la couche
+d'agents en fonctionnement, depuis le suivi d'un travail jusqu'au
+diagnostic d'un symptôme par remontée.
+
+Le troisième apport est une \textbf{vue honnête des limites} et des
+besoins de fiabilisation : routage explicite et non assisté, surfaces
+parallèles mais non composées, reprise en avant plutôt
+qu'annulation transactionnelle, observabilité possible mais non encore
+industrialisée. Ces limites tracent, en creux, le programme de travail
+d'une version ultérieure.
+
+Au-delà de ces trois apports, le chapitre a maintenu une discipline
+transversale qui constitue en elle-même une contribution
+méthodologique : pour chaque surface, chaque artefact d'observation et
+chaque mécanisme de reprise, il a distingué ce qui est \emph{en place}
+de ce qui est \emph{préconisé}. Cette séparation n'est pas un simple
+souci de prudence rédactionnelle. Elle reflète la posture attendue d'un
+travail d'ingénierie : ne revendiquer comme acquis que ce qui est
+effectivement conçu et défendable, et formuler le reste comme une
+perspective argumentée. Appliquée à une couche d'agents — où il est
+facile de confondre ce que la technologie \emph{permettrait} avec ce
+qui est \emph{réalisé} — cette discipline est aussi une garantie
+d'honnêteté vis-à-vis du lecteur comme du jury.
+
+Jusqu'ici, le rapport a suivi une progression continue. Les
+chapitres~1 et~2 ont posé la conception logique de la couche d'agents :
+fondations théoriques de l'orchestration et du protocole d'accès aux
+données, puis catalogue comparé des formes d'agents. Le présent
+chapitre y a ajouté la stratégie d'orchestration et le dispositif
+d'observabilité. Un axe demeure cependant à approfondir, que ce
+chapitre n'a abordé qu'en filigrane : la \textbf{sécurité applicative}
+de cette couche d'agents.
+
+Cet axe mérite un traitement à part entière. Le principe du moindre
+privilège rappelé au chapitre~2 (voir la
+section~\ref{sec:moindre-privilege}) constitue un point de départ, mais
+il ne dit rien de \emph{qui} sollicite un agent ni de la manière dont
+ce contrôle se combine à une gestion des accès par rôle. De même, une
+couche d'agents fondée sur de grands modèles de langage présente des
+surfaces d'attaque spécifiques — détournement par instructions
+injectées, fuite de données par les réponses — dont la mitigation
+n'a été ici qu'effleurée comme préoccupation, sans analyse dédiée. Le
+chapitre~4 prendra en charge cet axe. Il examinera comment le moindre
+privilège du protocole d'accès s'articule à un contrôle d'accès fondé
+sur les rôles, comment les injections d'instructions et les fuites de
+données se mitigent dans ce type d'architecture, et comment raisonner
+sur les contraintes de conformité dans ce contexte. Le chapitre
+suivant approfondit cet axe en examinant, sous l'angle de la
+cybersécurité, les surfaces d'attaque propres à une telle couche
+d'agents et les mesures de mitigation envisageables dans le cadre de
+SprintUp.
+
+\newpage
