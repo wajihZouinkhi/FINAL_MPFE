@@ -15,10 +15,10 @@ connaissances pédagogique partagée à travers le Model Context
 Protocol. Le présent rapport se concentre sur la
 \textbf{conception logique} de cette famille d'agents et du
 serveur qui les relie, indépendamment de toute pile technique
-particulière. La coordination des agents par un orchestrateur
-ainsi que l'analyse de sécurité associée constituent des
-prolongements naturels de cette conception, qui seront traités
-dans des versions ultérieures du présent document.
+particulière. La stratégie d'orchestration qui articule la
+coexistence de ces agents, ainsi que le dispositif d'observabilité
+et l'analyse de sécurité associés, font l'objet du chapitre~3, qui
+prolonge directement la présente conception.
 
 Le travail s'organise autour de trois apports complémentaires.
 Le premier est un \textbf{mécanisme d'indexation} des activités
@@ -62,14 +62,16 @@ par exemple l'assistant administrateur mentionné en perspective,
 ne demandera aucune modification du serveur ni des agents
 existants.
 
-\textbf{Une méthodologie d'évaluation centrée sur la qualité.}
-La méthodologie de tests décrite au chapitre 2, partie 4,
-substitue aux mesures classiques de latence et de débit des
-mesures plus exigeantes : couverture des objectifs pédagogiques,
-progression interne des activités, justesse factuelle et
-non-redondance par rapport à la base. Elle accepte explicitement
-qu'un pipeline plus exigeant en qualité soit également plus
-exigeant en temps de calcul.
+\textbf{Une lecture comparative des implémentations.}
+Plutôt qu'une campagne de tests de conformité, le chapitre~2
+propose une lecture comparative des formes d'agents livrées,
+organisée autour de quatre axes : propriété de l'orchestration
+(\gls{llm} contre code), posture humaine, granularité de
+l'artefact inspectable, coût et latence. Cette lecture montre que
+les variantes ne s'ordonnent pas sur une échelle linéaire de
+qualité mais répondent à des questions d'intégration distinctes,
+ce qui motive la stratégie d'orchestration développée au
+chapitre~3.
 
 \section*{Limites}
 
@@ -88,23 +90,25 @@ documentés au chapitre 2, mais l'arbitrage final dépendra de
 mesures de coût et de qualité à effectuer sur l'infrastructure
 définitive.
 
-Enfin, les \textbf{chiffres de qualité} produits par la
-méthodologie de tests ne sont pas reportés dans la présente
-version du document. Ils seront produits lors d'une phase
-d'évaluation dédiée et viendront compléter une version
-ultérieure du rapport.
+Enfin, la lecture comparative du chapitre~2 s'appuie sur des
+\textbf{observations d'ordre de grandeur} recueillies sur
+l'instance déployée, et non sur un banc d'essai systématique. Une
+évaluation quantitative à plus grande échelle — couverture des
+objectifs pédagogiques, non-redondance mesurée, coûts par
+variante — reste à mener et viendra étayer les constats
+qualitatifs présentés ici.
 
 \section*{Perspectives}
 
 Plusieurs directions s'ouvrent pour la suite du travail.
 
-La première concerne la \textbf{conception de l'orchestrateur},
-qui prendra en charge la coordination des agents au moment de
-l'exécution. L'algorithme de routage, le compteur de tours et le
-critère d'arrêt qui décident, à chaque tour de conversation,
-quel agent doit prendre la parole feront l'objet d'un travail
-dédié, à mener une fois la conception logique du présent
-document validée.
+La première concerne le \textbf{routage assisté entre variantes}.
+Le chapitre~3 définit une stratégie d'orchestration où le choix de
+la variante reste aujourd'hui explicite : l'enseignant choisit sa
+surface. Une évolution naturelle consiste à \emph{suggérer}
+automatiquement la variante adaptée à partir de l'intention
+exprimée et du contexte de session, sans retirer à l'enseignant la
+décision finale.
 
 La deuxième concerne l'\textbf{ajout d'un agent supplémentaire},
 l'assistant administrateur, dont la fonction de supervision
@@ -127,12 +131,14 @@ spécialisation par discipline (mathématiques, sciences, langues)
 permettrait de raffiner les rubriques d'évaluation qualitative
 et les heuristiques d'ancrage propres à chaque discipline.
 
-La cinquième et dernière concerne l'\textbf{analyse de sécurité}
-appliquée à l'ensemble. Au-delà des risques classiques d'une
-architecture web, les systèmes agentiques introduisent des
-vecteurs propres (injection par contenu indexé, empoisonnement
-de l'index, exfiltration par recherche) qui méritent une étude
-approfondie une fois l'architecture logique validée.
+La cinquième et dernière concerne l'\textbf{approfondissement de
+la sécurité}. Le chapitre~3 pose une analyse de sécurité
+applicative (surface d'attaque \gls{llm}, contrôle d'accès,
+gestion des secrets, traitement des données personnelles).
+Les vecteurs propres aux systèmes agentiques — injection par
+contenu indexé, empoisonnement de l'index, exfiltration par
+recherche — appellent au-delà une étude offensive systématique
+(tests d'intrusion ciblés).
 
 \vspace{1cm}
 En conclusion, ce projet montre qu'une famille d'agents
@@ -141,8 +147,8 @@ disposant d'un mécanisme d'indexation commun, constitue une
 réponse architecturale cohérente au problème de la génération
 pédagogique. La valeur de cette architecture se mesure d'abord à
 la qualité du contenu produit, à sa cohérence avec ce qui existe
-déjà, et à sa résistance aux entrées adversariales. Les chiffres
-qui supporteront cette affirmation seront produits par la
-méthodologie d'évaluation décrite au chapitre 2 et figureront
-dans une version ultérieure de ce document.
+déjà, et à sa résistance aux entrées adversariales. La validation
+quantitative de cette affirmation, à l'échelle d'un banc d'essai
+dédié, prolongera naturellement les constats qualitatifs établis
+dans le présent document.
 \newpage

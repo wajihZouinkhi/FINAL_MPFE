@@ -429,8 +429,9 @@ Assistant administrateur &
 Trois observations méritent d'être soulignées. L'agent~1, qui sert
 de générateur d'activités sans \gls{mcp}, ne dispose d'aucun outil
 exposé par le protocole : sa production, non ancrée dans le contenu
-existant, constitue la ligne de base à laquelle sera comparée celle
-de l'agent~2 lors de la phase de tests. L'assistant élève, pour sa
+existant, constitue la ligne de base à laquelle est comparée celle
+de l'agent~2 dans la lecture comparative de la
+\textsection\ref{sec:comparatif}. L'assistant élève, pour sa
 part, ne dispose d'aucun outil d'écriture : il peut consulter le
 syllabus et la progression de l'étudiant, mais ne peut ni créer de
 contenu ni modifier de données. L'assistant administrateur, enfin,
@@ -1386,8 +1387,9 @@ l'agent~1. Ce repli est un comportement de conception, non un
 défaut~: il signifie que le coût d'ancrage n'est payé que quand il
 apporte une valeur.
 
-L'ancrage a précisément un coût observable. À l'échelle des trois
-prompts rejoués, l'agent~2 consomme environ trois fois plus de
+L'ancrage a précisément un coût observable. Sur les sujets rejoués
+depuis l'instance déployée, et à titre d'ordre de grandeur,
+l'agent~2 consomme environ trois fois plus de
 tokens d'entrée que l'agent~1 et présente un surcoût de latence de
 l'ordre de quelques dizaines de pour cent, entièrement imputable à
 la phase de lecture qui précède la génération. Les tokens de sortie
@@ -1497,7 +1499,7 @@ suppose une production asynchrone observable par statut. Une
 enveloppe industrielle (V2/Op.~2) suppose un déclencheur
 programmatique non bloquant. Chaque enveloppe est cohérente avec
 sa variante d'origine et incohérente avec les autres : c'est ce
-constat, plus que les valeurs absolues mesurées, qui motive le
+constat, plus que les valeurs absolues mesurées, qui motivera le
 chapitre suivant.
 
 \subsection{Enseignements croisés}
@@ -1520,8 +1522,8 @@ Ces trois constats — propriété de l'orchestration, posture humaine,
 conditionnalité de l'ancrage — ne se résolvent pas au niveau d'une
 variante isolée. Ils appellent une \emph{stratégie d'orchestration}
 qui articule la coexistence des variantes selon la phase du
-workflow et le contexte d'intégration. Le chapitre suivant prend en
-charge cette stratégie : routage entre variantes, articulation des
+workflow et le contexte d'intégration. Le chapitre suivant prendra
+en charge cette stratégie : routage entre variantes, articulation des
 surfaces conversationnelle, atelier et SDK, politique de sécurité
 adossée au principe du moindre privilège, et procédure
 d'opérationnalisation sur l'instance déployée.
@@ -1566,15 +1568,15 @@ déployée ? Et comment, sur cette même couche, traduire le principe
 du moindre privilège du \gls{mcp} en une politique de sécurité
 applicative au sens propre ?
 
-Le chapitre~3 prend ces questions en charge. Il définit la stratégie
-d'orchestration des variantes (politique de routage, articulation
-des surfaces, mutualisation des sous-graphes communs), décrit le
-dispositif d'observabilité associé (traces \gls{llm}, machine d'état
-publique, métriques de débit et de latence), et adosse à ce
-dispositif l'analyse de sécurité — surface d'attaque, contrôle
+Le chapitre~3 prendra ces questions en charge. Il définira la
+stratégie d'orchestration des variantes (politique de routage,
+articulation des surfaces, mutualisation des sous-graphes communs),
+décrira le dispositif d'observabilité associé (traces \gls{llm},
+machine d'état publique, métriques de débit et de latence), et y
+adossera l'analyse de sécurité — surface d'attaque, contrôle
 d'accès, gestion des secrets, traitement des données personnelles —
 ainsi que les procédures d'opérationnalisation nécessaires à la
 mise en production. Le chapitre~2 a comparé les formes d'agents ; le
-chapitre~3 organise leur coexistence.
+chapitre~3 en organisera la coexistence.
 
 \newpage
